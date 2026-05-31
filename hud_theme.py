@@ -72,7 +72,11 @@ _STYLE = """
 :root {
   --hud-bg:#080C14; --hud-card:#0C1220; --hud-inset:#0A0F1C; --hud-border:#00D4FF33;
   --hud-cyan:#00D4FF; --hud-cyan-08:#00D4FF14; --hud-cyan-12:#00D4FF1F;
-  --hud-cyan-20:#00D4FF33; --hud-cyan-40:#00D4FF66; --hud-muted:#00D4FF73;
+  --hud-cyan-20:#00D4FF33; --hud-cyan-40:#00D4FF66;
+  /* --hud-muted raised to an opaque cyan-grey so small informational text
+     (sub-lines, honest-status notes, empty-state copy) clears WCAG 1.4.3 AA
+     4.5:1 over the card/deep bg. Was #00D4FF73 (~3.0:1, large-text only). */
+  --hud-muted:#7FB8CE;
   --hud-label:#8FB8C8; --hud-text:#E0F2FE;
   --hud-success:#00E676; --hud-success-12:#00E6761F;
   --hud-warning:#FFB300; --hud-warning-12:#FFB3001F;
@@ -125,6 +129,25 @@ code { background: var(--bg-inset); color: var(--hud-cyan);
 [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
 [data-testid="stSidebar"] h3 { color: var(--accent); }
 
+/* ---- Sidebar radio nav -> tactical tab treatment ----
+   The primary nav is an st.radio; without this it renders as default Streamlit
+   radio dots + body text. Give each option mono/tracked labels with hover +
+   selected cyan accent, and color the selected dot with --accent so selection
+   is perceptible on the dark sidebar (not a washed-out browser default). */
+[data-testid="stSidebar"] [role="radiogroup"] label {
+  font-family: var(--font-mono); font-size: .74rem; letter-spacing: 2px;
+  text-transform: uppercase; color: var(--hud-label);
+  padding: .3rem .2rem; border-left: 2px solid transparent; transition: all .15s ease;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:hover { color: var(--text-primary); }
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+  color: var(--hud-cyan); border-left: 2px solid var(--hud-cyan);
+  text-shadow: 0 0 8px var(--hud-cyan-40);
+}
+[data-testid="stSidebar"] [role="radiogroup"] [data-baseweb="radio"] div[aria-checked="true"] {
+  background: var(--accent) !important; border-color: var(--accent) !important;
+}
+
 /* ---- Tabs (active tab = cyan underline glow) ---- */
 .stTabs [data-baseweb="tab-list"] {
   gap: 4px; border-bottom: 1px solid var(--border-subtle); background: transparent;
@@ -171,8 +194,12 @@ code { background: var(--bg-inset); color: var(--hud-cyan);
   color: var(--hud-bg); background: var(--hud-cyan);
   border-color: var(--hud-cyan); box-shadow: 0 0 12px var(--hud-cyan-40);
 }
-.stButton > button:focus, .stDownloadButton > button:focus {
-  outline: none; box-shadow: 0 0 0 2px var(--hud-cyan-40);
+/* Focus indicator: full-opacity cyan (#00D4FF ~11:1 on the deep bg) at >=2px,
+   never nulling the outline without a visible replacement (WCAG 2.4.7 / 1.4.11). */
+.stButton > button:focus-visible, .stDownloadButton > button:focus-visible,
+.stFormSubmitButton > button:focus-visible {
+  outline: 2px solid var(--hud-cyan); outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--hud-cyan-40);
 }
 
 /* ---- Toggle / checkbox ---- */
@@ -191,8 +218,24 @@ code { background: var(--bg-inset); color: var(--hud-cyan);
   border: 1px solid var(--border-subtle) !important; border-radius: var(--r-md) !important;
   font-family: var(--font-mono);
 }
-.stTextInput input:focus, .stNumberInput input:focus, .stTextArea textarea:focus {
-  border-color: var(--hud-cyan) !important; box-shadow: 0 0 0 1px var(--hud-cyan-40) !important;
+.stTextInput input:focus, .stNumberInput input:focus, .stTextArea textarea:focus,
+[data-baseweb="select"] > div:focus-within {
+  border-color: var(--hud-cyan) !important;
+  box-shadow: 0 0 0 2px var(--hud-cyan) !important;
+}
+
+/* Visible focus for the sidebar radio nav, toggle, and checkbox — these had no
+   explicit focus style and relied on browser defaults the dark theme can wash
+   out (WCAG 2.4.7 / 1.4.11). Full-cyan ring, never color-on-color sub-3:1. */
+[data-testid="stSidebar"] [role="radiogroup"] label:focus-within,
+[data-baseweb="radio"]:focus-within,
+.stCheckbox label:focus-within, [data-baseweb="checkbox"]:focus-within,
+.stToggle label:focus-within, [data-baseweb="toggle"]:focus-within {
+  outline: 2px solid var(--hud-cyan); outline-offset: 2px; border-radius: var(--r-sm);
+}
+[data-testid="stSidebar"] [role="radiogroup"] input:focus-visible,
+.stCheckbox input:focus-visible, .stToggle input:focus-visible {
+  outline: 2px solid var(--hud-cyan); outline-offset: 2px;
 }
 
 /* ---- DataFrame / tables ---- */
