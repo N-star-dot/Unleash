@@ -1,22 +1,31 @@
 """
 Perception Agent — real-time JSON stream for the decision/memory system.
 
-Runs headlessly, prints one JSON line per frame (only when non-empty) to stdout.
-All status/debug goes to stderr so stdout stays pipe-clean.
+Runs headlessly, emits one JSON line per frame to stdout (only when non-empty).
+All status/debug goes to stderr. No voice — that belongs in the decision agent.
+
+Person filter: only emitted when approaching+close OR facing camera (face visible).
+This keeps the feed signal-dense rather than noisy.
 
 Output contract:
 {
   "timestamp": <unix_ms>,
   "scene": "street" | "indoor" | "nature" | "unknown",
   "ambient_light": "ok" | "dim" | "dark",
-  "crowd_count": <int>,
-  "detections": [
-    {"label": "person", "confidence": 0.88, "side": "left"|"center"|"right",
-     "proximity": "close"|"far", "velocity": "approaching"|"receding"|
-     "crossing-L"|"crossing-R"|"stationary"|"unknown", "collision_risk": 0.72}
+  "crowd_count": <int>,          // total persons visible (even if not emitted)
+  "detections": [                // non-person obstacles + filtered persons
+    {
+      "label": "person"|"car"|...,
+      "confidence": 0.88,
+      "side": "left"|"center"|"right",
+      "proximity": "close"|"far",
+      "velocity": "approaching"|"receding"|"crossing-L"|"crossing-R"|"stationary"|"unknown",
+      "collision_risk": 0.72,
+      "facing_camera": true|false   // persons only — face detected in bbox
+    }
   ],
   "hazards": [
-    {"label": "stairs"|"door-open"|"door-closed"|..., "confidence": 0.85, "side": "center"}
+    {"label": "stairs"|"door-open"|..., "confidence": 0.85, "side": "center"}
   ],
   "threats": [
     {"label": "knife"|"gun", "confidence": 0.72, "side": "right"}
@@ -25,9 +34,8 @@ Output contract:
 }
 
 Usage:
-    python perception.py                    # camera 1
     python perception.py --camera 0
-    python perception.py --camera 0 | tee detections.jsonl   # log + pipe
+    python perception.py --camera 0 | python decision_agent.py
 """
 
 import argparse
@@ -46,7 +54,7 @@ import easyocr
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 CONF_NAV    = 0.45
-CONF_STRUCT = 0.65   # raised — stairs model overfits on linear shapes at low confidence
+CONF_STRUCT = 0.80   # high threshold — stairs model overfits on low confidence
 CONF_WEAPON = 0.45
 
 NAV_CLASSES = {
@@ -67,6 +75,11 @@ DOORS_MODEL_PATH  = os.path.join(_BASE, "models/doors_run/train/weights/best.pt"
 WEAPON_MODEL_PATH = os.path.join(_BASE, "models/weapons/train/weights/best.pt")
 if not os.path.exists(WEAPON_MODEL_PATH):
     WEAPON_MODEL_PATH = os.path.join(_BASE, "best.pt")
+
+# Face detector for "facing camera" / "talking to me" signal
+_FACE_CASCADE = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+)
 
 
 # ─── Motion tracker ───────────────────────────────────────────────────────────
@@ -139,6 +152,21 @@ def ambient_level(frame):
     m = np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
     return "dark" if m < 50 else ("dim" if m < 110 else "ok")
 
+def face_in_box(gray, x1, y1, x2, y2):
+    """True if a frontal face is detected in the upper half of the bounding box."""
+    mid_y = (y1 + y2) // 2
+    crop  = gray[y1:mid_y, x1:x2]
+    if crop.size == 0:
+        return False
+    faces = _FACE_CASCADE.detectMultiScale(crop, scaleFactor=1.1, minNeighbors=3)
+    return len(faces) > 0
+
+def person_is_relevant(vel, prox, facing):
+    """Only emit person if approaching+close OR facing the camera (talking to user)."""
+    if facing:
+        return True
+    return vel == "approaching" and prox == "close"
+
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
@@ -175,10 +203,10 @@ def main():
 
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"Camera {args.camera}: {W}x{H}. Press Ctrl-C to stop.", file=sys.stderr)
+    print(f"Camera {args.camera}: {W}x{H}. Ctrl-C to stop.", file=sys.stderr)
 
-    tracker     = Tracker()
-    frame_n     = 0
+    tracker      = Tracker()
+    frame_n      = 0
     struct_cache: list = []
     weapon_cache: list = []
 
@@ -188,24 +216,48 @@ def main():
             time.sleep(0.02)
             continue
 
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
         # ── YOLOv8n every frame ───────────────────────────────────────────────
-        detections = []
-        seen: set  = set()
+        detections  = []
+        seen: set   = set()
+        total_ppl   = 0
+
         for box in nav_model(frame, verbose=False)[0].boxes:
             label = nav_model.names[int(box.cls[0])]
             conf  = float(box.conf[0])
             if label not in NAV_CLASSES or conf < CONF_NAV: continue
+
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             vel, risk = tracker.update(label, x1, y1, x2, y2, W, H)
             cx   = (x1+x2)/2
-            detections.append({
-                "label":          label,
-                "confidence":     round(conf, 2),
-                "side":           side_of(cx, W),
-                "proximity":      "close" if (x2-x1)/W > 0.30 else "far",
-                "velocity":       vel,
-                "collision_risk": risk,
-            })
+            prox = "close" if (x2-x1)/W > 0.30 else "far"
+            s    = side_of(cx, W)
+
+            if label == "person":
+                total_ppl += 1
+                facing = face_in_box(gray, x1, y1, x2, y2)
+                if not person_is_relevant(vel, prox, facing):
+                    seen.add(label)
+                    continue   # skip — not approaching or not facing camera
+                detections.append({
+                    "label":          "person",
+                    "confidence":     round(conf, 2),
+                    "side":           s,
+                    "proximity":      prox,
+                    "velocity":       vel,
+                    "collision_risk": risk,
+                    "facing_camera":  bool(facing),
+                })
+            else:
+                detections.append({
+                    "label":          label,
+                    "confidence":     round(conf, 2),
+                    "side":           s,
+                    "proximity":      prox,
+                    "velocity":       vel,
+                    "collision_risk": risk,
+                })
             seen.add(label)
 
         # ── Specialist models every 3 frames ──────────────────────────────────
@@ -240,19 +292,18 @@ def main():
         if frame_n % 20 == 0:
             ocr_worker.submit(frame)
 
-        # ── Emit JSON if anything detected ────────────────────────────────────
+        # ── Emit JSON ─────────────────────────────────────────────────────────
         if detections or struct_cache or weapon_cache:
-            payload = {
-                "timestamp":    int(time.time() * 1000),
-                "scene":        classify_scene(seen),
+            print(json.dumps({
+                "timestamp":     int(time.time() * 1000),
+                "scene":         classify_scene(seen),
                 "ambient_light": ambient_level(frame),
-                "crowd_count":  sum(1 for d in detections if d["label"] == "person"),
-                "detections":   detections,
-                "hazards":      struct_cache,
-                "threats":      weapon_cache,
+                "crowd_count":   total_ppl,
+                "detections":    detections,
+                "hazards":       struct_cache,
+                "threats":       weapon_cache,
                 "text_detected": ocr_worker.get(),
-            }
-            print(json.dumps(payload), flush=True)
+            }), flush=True)
 
         frame_n += 1
 

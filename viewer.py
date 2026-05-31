@@ -25,12 +25,22 @@ import numpy as np
 from ultralytics import YOLO
 import easyocr
 
+_FACE_CASCADE = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+)
+
+def _face_in_box(gray, x1, y1, x2, y2):
+    mid_y = (y1 + y2) // 2
+    crop  = gray[y1:mid_y, x1:x2]
+    if crop.size == 0: return False
+    return len(_FACE_CASCADE.detectMultiScale(crop, 1.1, 3)) > 0
+
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 CONF_NAV      = 0.45
-CONF_STRUCT   = 0.65   # stairs + doors — raised to reduce false positives on small objects
-CONF_WEAPON   = 0.45   # weapon model threshold
+CONF_STRUCT   = 0.80   # stairs/doors — high threshold, model overfits on low confidence
+CONF_WEAPON   = 0.45
 
 NAV_CLASSES = {
     "person", "bicycle", "car", "motorcycle", "bus", "truck",
@@ -197,7 +207,9 @@ def main():
 
         # ── YOLOv8n — every frame ─────────────────────────────────────────────
         nav_dets: list = []
-        seen: set = set()
+        seen: set  = set()
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
         for box in nav_model(frame, verbose=False)[0].boxes:
             label = nav_model.names[int(box.cls[0])]
             conf  = float(box.conf[0])
@@ -207,8 +219,14 @@ def main():
             cx   = (x1+x2)/2
             side = "L" if cx < W/3 else ("C" if cx < 2*W/3 else "R")
             prox = "close" if (x2-x1)/W > 0.30 else "far"
+            facing = _face_in_box(gray, x1, y1, x2, y2) if label == "person" else False
+            # Filter persons: only show if approaching+close OR facing camera
+            if label == "person" and vel != "approaching" and prox != "close" and not facing:
+                seen.add(label)
+                continue
             nav_dets.append(dict(label=label, conf=conf, side=side,
-                                 prox=prox, vel=vel, risk=risk, box=(x1,y1,x2,y2)))
+                                 prox=prox, vel=vel, risk=risk,
+                                 facing=facing, box=(x1,y1,x2,y2)))
             seen.add(label)
 
         # ── Specialist models — every 3 frames ────────────────────────────────
@@ -268,7 +286,8 @@ def main():
             elif d["vel"] == "approaching" or d["prox"] == "close":  color = C_WARN
             else:                                                      color = C_SAFE
             cv2.rectangle(frame, (x1,y1), (x2,y2), color, 2)
-            pill(frame, f" {d['label']} {d['conf']:.0%} {d['side']} {d['vel']} ",
+            face_tag = " 👁" if d.get("facing") else ""
+            pill(frame, f" {d['label']} {d['conf']:.0%} {d['side']} {d['vel']}{face_tag} ",
                  x1, max(y1-4, top+18), color)
 
         for d in struct_cache:
