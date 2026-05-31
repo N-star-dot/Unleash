@@ -56,11 +56,23 @@ mem0_config = {
         }
     }
 }
-memory_client = Memory.from_config(mem0_config)
+# Build the heavy clients fail-soft: importing this module must NEVER raise (ui.py
+# imports it at module load, before any of its defensive try/except runs). With no
+# GEMINI_API_KEY both constructors raise; in that case we degrade to None and each
+# agent below guards on it, so the dashboard still renders and runs in Safe mode.
+try:
+    memory_client = Memory.from_config(mem0_config)
+except Exception as e:
+    memory_client = None
+    print(f"[mem0] memory disabled ({type(e).__name__}); set GEMINI_API_KEY to enable.")
 
 # Initialize the official Google GenAI client
 # It automatically picks up os.environ["GEMINI_API_KEY"]
-ai_client = genai.Client()
+try:
+    ai_client = genai.Client()
+except Exception as e:
+    ai_client = None
+    print(f"[genai] LLM disabled ({type(e).__name__}); set GEMINI_API_KEY to enable.")
 
 # =====================================================================
 # 2. THE CONFLICT BUS DEFINITION (LangGraph State)
@@ -145,9 +157,9 @@ def pattern_detector(state: ConflictBusState) -> dict:
 def memory_agent(state: ConflictBusState) -> dict:
     """Agent 3: Case-based semantic lookup via Gemini-powered Mem0."""
     predictions = state.get("active_predictions", [])
-    if not predictions:
+    if not predictions or memory_client is None:
         return {"retrieved_memories": []}
-        
+
     latest_pred = predictions[-1]["description"]
     
     # Mem0 queries vector database using Gemini embeddings
@@ -166,8 +178,8 @@ def behavior_orchestrator(state: ConflictBusState) -> dict:
     """Agent 4: Resolves action matrices using Gemini Flash for rapid routing."""
     predictions = state.get("active_predictions", [])
     memories = state.get("retrieved_memories", [])
-    
-    if not predictions:
+
+    if not predictions or ai_client is None:
         return {"final_action": "Maintain passive navigation mode (Safe)"}
 
     # Construct the prompt for Gemini reasoning execution
@@ -199,9 +211,9 @@ def behavior_orchestrator(state: ConflictBusState) -> dict:
 def retrospective_agent(state: ConflictBusState, resolution_success: bool):
     """Agent 5: Saves outcomes back to Mem0 using Gemini compaction."""
     predictions = state.get("active_predictions", [])
-    if not predictions:
+    if not predictions or memory_client is None:
         return
-        
+
     episode_summary = f"Context: {predictions[-1]['description']} | Action: {state['final_action']} | Success: {resolution_success}"
     
     memory_client.add(
@@ -209,11 +221,19 @@ def retrospective_agent(state: ConflictBusState, resolution_success: bool):
         user_id="user_thtrang_06"
     )
 
-def _trigger_bland_ai_call(reason: str) -> str:
-    """Helper to dispatch a live AI voice call via Bland AI."""
+def _trigger_bland_ai_call(reason: str, arm_real_calls: bool = False) -> str:
+    """Helper to dispatch a live AI voice call via Bland AI.
+
+    When `arm_real_calls` is False the call is ALWAYS simulated — this gate is
+    explicit and thread-safe (no global env mutation), so a disarmed run can
+    never place a live call even under Streamlit's concurrent reruns.
+    """
+    if not arm_real_calls:
+        return "[SIMULATED BLAND AI] Calls disarmed (ARM REAL CALLS off). Simulated call dispatched."
+
     bland_api_key = os.environ.get("BLAND_API_KEY")
     caregiver_phone = os.environ.get("CAREGIVER_PHONE")
-    
+
     if not bland_api_key or not caregiver_phone:
         return "[SIMULATED BLAND AI] Missing BLAND_API_KEY or CAREGIVER_PHONE env vars. Simulated call dispatched."
         
@@ -240,10 +260,12 @@ def action_dispatcher(state: ConflictBusState) -> dict:
     action = state.get("final_action", "")
     predictions = state.get("active_predictions", [])
     reason_context = predictions[-1]["description"] if predictions else "Unknown physiological anomaly"
-    
+    # Safety gate threaded explicitly through state (default OFF = always simulated).
+    arm_real_calls = bool(state.get("arm_real_calls", False))
+
     # Mock routing table for physical actions
     if "emergency services" in action.lower():
-        status = _trigger_bland_ai_call(reason_context)
+        status = _trigger_bland_ai_call(reason_context, arm_real_calls)
         return {"execution_status": status}
     elif "airpods" in action.lower():
         # e.g., trigger Apple HealthKit/Bluetooth

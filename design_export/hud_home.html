@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Unleash — HUD HOME</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;600&display=swap" rel="stylesheet" />
+<!-- lucide icons -->
+<script src="https://unpkg.com/lucide@latest"></script>
+<link rel="stylesheet" href="./tokens.css" />
+<link rel="stylesheet" href="./hud.css" />
+<style> body { background:#05080e; display:grid; place-items:center; min-height:100vh; } </style>
+</head>
+<body>
+  <!-- HUD HOME — 390x844. Generated from untitled.pen frame QyOvA. -->
+  <div class="hud-screen">
+
+    <!-- StatusBar -->
+    <div class="hud-statusbar">
+      <span class="time">09:41</span>
+      <span class="sbr"><span class="net">5G</span><i data-lucide="battery-full" style="color:var(--hud-cyan);width:16px;height:16px"></i></span>
+    </div>
+
+    <!-- Header -->
+    <div class="hud-header">
+      <div class="hud-reactor">
+        <div class="ring1"></div><div class="ring2"></div>
+        <div class="core"><i data-lucide="radio" style="width:8px;height:8px"></i></div>
+      </div>
+      <div class="hud-htxt">
+        <div class="hud-title">COMMAND</div>
+        <div class="hud-sub">SERVICE DOG // ONLINE</div>
+      </div>
+      <span class="pill pill--live"><span class="dot"></span>LIVE</span>
+    </div>
+
+    <!-- Body -->
+    <div class="hud-body">
+      <div class="hud-sep"><span>SENSORS // ACTIVE</span></div>
+
+      <!-- Stat grid -->
+      <div class="stat-grid">
+        <div class="stat-row">
+          <div class="stat-card">
+            <div class="top"><span class="ib"><i data-lucide="cpu" style="width:14px;height:14px;color:var(--hud-cyan)"></i></span><span class="cb">OK</span></div>
+            <div class="num">6</div><div class="lbl">AGENTS ONLINE</div>
+            <span class="corner tl-h"></span><span class="corner tl-v"></span><span class="corner tr-h"></span><span class="corner tr-v"></span><span class="corner bl-h"></span><span class="corner bl-v"></span><span class="corner br-h"></span><span class="corner br-v"></span>
+          </div>
+          <div class="stat-card">
+            <div class="top"><span class="ib"><i data-lucide="target" style="width:14px;height:14px;color:var(--hud-cyan)"></i></span><span class="cb">HI</span></div>
+            <div class="num">91</div><div class="lbl">CONFIDENCE</div>
+            <span class="corner tl-h"></span><span class="corner tl-v"></span><span class="corner tr-h"></span><span class="corner tr-v"></span><span class="corner bl-h"></span><span class="corner bl-v"></span><span class="corner br-h"></span><span class="corner br-v"></span>
+          </div>
+        </div>
+        <div class="stat-row">
+          <div class="stat-card is-success">
+            <div class="top"><span class="ib"><i data-lucide="heart-pulse" style="width:14px;height:14px;color:var(--hud-success)"></i></span><span class="cb" style="background:var(--hud-success-12);border-color:var(--hud-success)">BPM</span></div>
+            <div class="num">72</div><div class="lbl">HEART RATE</div>
+            <span class="corner tl-h"></span><span class="corner tl-v"></span><span class="corner tr-h"></span><span class="corner tr-v"></span><span class="corner bl-h"></span><span class="corner bl-v"></span><span class="corner br-h"></span><span class="corner br-v"></span>
+          </div>
+          <div class="stat-card is-warning">
+            <div class="top"><span class="ib"><i data-lucide="triangle-alert" style="width:14px;height:14px;color:var(--hud-warning)"></i></span><span class="cb" style="background:var(--hud-warning-12);border-color:var(--hud-warning)">NEAR</span></div>
+            <div class="num">2</div><div class="lbl">HAZARDS NEAR</div>
+            <span class="corner tl-h"></span><span class="corner tl-v"></span><span class="corner tr-h"></span><span class="corner tr-v"></span><span class="corner bl-h"></span><span class="corner bl-v"></span><span class="corner br-h"></span><span class="corner br-v"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Perception panel -->
+      <div class="panel">
+        <div class="panel-head">
+          <span class="dot"></span>
+          <div class="pht"><span class="t">PERCEPTION</span><span class="s">YOLOV8 // CONTINUITY CAM</span></div>
+          <span class="pill pill--danger"><span class="dot"></span>REC</span>
+        </div>
+        <div class="panel-body">
+          <div class="cam">
+            <span class="det-tag" style="left:118px;top:6px">RED LIGHT 0.94</span>
+            <span class="frame-tag"><i data-lucide="scan-eye" style="width:10px;height:10px;color:var(--hud-cyan)"></i>FRAME 4210 // 30FPS</span>
+          </div>
+          <div class="chips">
+            <span class="chip is-danger"><span class="d"></span>RED LIGHT</span>
+            <span class="chip"><span class="d"></span>CROSSWALK</span>
+            <span class="chip is-warning"><span class="d"></span>CAR x2</span>
+            <span class="chip is-success"><span class="d"></span>CURB</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Voice panel -->
+      <div class="voice">
+        <div class="voice-head">
+          <span class="vhl"><i data-lucide="volume-2" style="width:14px;height:14px"></i>VOICE OUTPUT</span>
+          <span class="pill pill--danger">URGENT</span>
+        </div>
+        <div class="voice-body">
+          <p class="voice-spoken">&ldquo;RED LIGHT. TWO CARS ON YOUR RIGHT. WAIT.&rdquo;</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab bar -->
+    <nav class="hud-tabbar">
+      <a class="hud-tab is-active"><span class="ul"></span><i data-lucide="house" style="width:21px;height:21px"></i><span class="lbl">HOME</span></a>
+      <a class="hud-tab"><span class="ul"></span><i data-lucide="activity" style="width:21px;height:21px"></i><span class="lbl">DATA</span></a>
+      <a class="hud-tab"><span class="ul"></span><i data-lucide="map" style="width:21px;height:21px"></i><span class="lbl">MAP</span></a>
+      <a class="hud-tab"><span class="ul"></span><i data-lucide="user" style="width:21px;height:21px"></i><span class="lbl">UNIT</span></a>
+    </nav>
+  </div>
+  <script>lucide.createIcons();</script>
+</body>
+</html>

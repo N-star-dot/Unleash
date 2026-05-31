@@ -1,0 +1,151 @@
+/* Unleash — HUD component styles (matches untitled.pen frames)
+   Pairs with tokens.css and hud_home.html / HudHome.jsx.
+   Layout mirrors Pencil's flex model: frames = flex containers.
+*/
+
+* { box-sizing: border-box; margin: 0; }
+
+/* visually-hidden: present for screen readers, off-screen visually */
+.vis-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.hud-screen {
+  width: 390px;
+  height: 844px;
+  display: flex;
+  flex-direction: column;
+  background: var(--hud-bg);
+  color: var(--hud-text);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  position: relative;
+}
+
+/* ---------- Status bar ---------- */
+.hud-statusbar {
+  height: 34px;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 18px;
+  background: var(--hud-bg);
+  font-size: 12px; font-weight: 700; letter-spacing: 1px;
+}
+.hud-statusbar .sbr { display: flex; align-items: center; gap: 8px; }
+.hud-statusbar .net { color: var(--hud-muted); font-size: 10px; font-weight: 400; }
+
+/* ---------- Header ---------- */
+.hud-header {
+  height: 64px; display: flex; align-items: center; gap: 12px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--hud-border);
+}
+.hud-reactor { position: relative; width: 36px; height: 36px; flex: none; }
+.hud-reactor .ring1, .hud-reactor .ring2, .hud-reactor .core { position: absolute; border-radius: 50%; }
+.hud-reactor .ring1 { width: 36px; height: 36px; border: 1px solid var(--hud-cyan-20); }
+.hud-reactor .ring2 { width: 26px; height: 26px; inset: 5px; border: 1.5px solid var(--hud-cyan-40); }
+.hud-reactor .core  {
+  width: 16px; height: 16px; inset: 10px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--hud-cyan-20); border: 1.5px solid var(--hud-cyan);
+  box-shadow: 0 0 8px var(--hud-cyan); color: var(--hud-cyan);
+}
+.hud-htxt { display: flex; flex-direction: column; gap: 3px; flex: 1; }
+.hud-title { font-size: 14px; font-weight: 700; letter-spacing: 2px; }
+.hud-sub   { font-size: 11px; letter-spacing: 1.5px; color: var(--hud-label); }
+
+/* status pill (LIVE / WEAVE / etc.) */
+.pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 9px; border-radius: var(--r-sm);
+  font-size: 8px; letter-spacing: 1.5px;
+}
+.pill .dot { width: 5px; height: 5px; border-radius: 50%; }
+.pill--live    { background: var(--hud-success-12); border: 1px solid var(--hud-success); color: var(--hud-success); }
+.pill--live .dot { background: var(--hud-success); }
+.pill--danger  { background: var(--hud-danger-12); border: 1px solid var(--hud-danger); color: var(--hud-danger); }
+.pill--danger .dot { background: var(--hud-danger); }
+.pill--cyan    { background: var(--hud-cyan-12); border: 1px solid var(--hud-cyan); color: var(--hud-cyan); }
+
+/* ---------- Body ---------- */
+.hud-body { flex: 1; display: flex; flex-direction: column; gap: 14px; padding: 16px; overflow: hidden; }
+
+/* section separator: ─── LABEL ─── */
+.hud-sep { display: flex; align-items: center; gap: 8px; }
+.hud-sep::before, .hud-sep::after { content: ""; flex: 1; height: 1px; background: var(--hud-cyan-20); }
+.hud-sep span { font-size: 11px; letter-spacing: 2px; color: var(--hud-label); white-space: nowrap; }
+
+/* ---------- Stat grid ---------- */
+.stat-grid { display: flex; flex-direction: column; gap: 10px; }
+.stat-row  { display: flex; gap: 10px; }
+.stat-card {
+  position: relative; flex: 1; height: 98px;
+  display: flex; flex-direction: column; gap: 6px; padding: 12px;
+  background: var(--hud-card); border: 1px solid var(--hud-border); border-radius: var(--r-md);
+}
+.stat-card .top { display: flex; align-items: center; justify-content: space-between; }
+.stat-card .ib {
+  width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+  border-radius: var(--r-md); background: var(--hud-cyan-12); border: 1px solid var(--hud-cyan);
+}
+.stat-card .cb { padding: 2px 6px; border-radius: var(--r-sm); background: var(--hud-cyan-12); border: 1px solid var(--hud-cyan); font-size: 7px; letter-spacing: 1px; }
+.stat-card .num { font-size: 30px; font-weight: 700; letter-spacing: 2px; line-height: 1; color: var(--hud-cyan); text-shadow: 0 0 8px var(--hud-cyan); }
+.stat-card .lbl { font-size: 11px; letter-spacing: 1.5px; color: var(--hud-label); }
+/* state variants recolor icon, badge, number + glow */
+.stat-card.is-success .ib { background: var(--hud-success-12); border-color: var(--hud-success); }
+.stat-card.is-success .num { color: var(--hud-success); text-shadow: 0 0 8px var(--hud-success); }
+.stat-card.is-warning .ib { background: var(--hud-warning-12); border-color: var(--hud-warning); }
+.stat-card.is-warning .num { color: var(--hud-warning); text-shadow: 0 0 8px var(--hud-warning); }
+/* corner brackets */
+.corner { position: absolute; background: var(--hud-cyan); }
+.corner.tl-h { top:0; left:0; width:14px; height:1.5px; }
+.corner.tl-v { top:0; left:0; width:1.5px; height:14px; }
+.corner.tr-h { top:0; right:0; width:14px; height:1.5px; opacity:.5; }
+.corner.tr-v { top:0; right:0; width:1.5px; height:14px; opacity:.5; }
+.corner.bl-h { bottom:0; left:0; width:14px; height:1.5px; opacity:.35; }
+.corner.bl-v { bottom:0; left:0; width:1.5px; height:14px; opacity:.35; }
+.corner.br-h { bottom:0; right:0; width:14px; height:1.5px; opacity:.35; }
+.corner.br-v { bottom:0; right:0; width:1.5px; height:14px; opacity:.35; }
+
+/* ---------- Perception panel ---------- */
+.panel { position: relative; background: var(--hud-card); border: 1px solid var(--hud-border); border-radius: var(--r-md); overflow: hidden; }
+.panel-head { display: flex; align-items: center; gap: 8px; padding: 11px 12px; border-bottom: 1px solid var(--hud-border); }
+.panel-head .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--hud-cyan); }
+.panel-head .pht { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.panel-head .t { font-size: 11px; letter-spacing: 2px; color: var(--hud-cyan); }
+.panel-head .s { font-size: 11px; letter-spacing: 1.5px; color: var(--hud-label); }
+.panel-body { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+.cam {
+  position: relative; height: 138px; border-radius: var(--r-sm);
+  background: var(--hud-inset); overflow: hidden;
+}
+.cam--standby {
+  display: flex; align-items: center; justify-content: center;
+  background:
+    radial-gradient(120% 80% at 50% 40%, var(--hud-cyan-08) 0%, transparent 60%),
+    var(--hud-inset);
+}
+.cam-standby { font-size: 9px; letter-spacing: 2px; color: var(--hud-label); }
+.cam .frame-tag { position: absolute; left: 8px; bottom: 8px; display:flex; align-items:center; gap:5px; padding: 3px 6px; border-radius: 2px; background: #000000AA; font-size: 7px; letter-spacing: 1px; }
+.det-tag { position: absolute; padding: 2px 5px; border-radius: 2px; background: var(--hud-danger); color: var(--hud-bg); font-size: 7px; letter-spacing: 1px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 5px 7px; border-radius: var(--r-sm); background: var(--hud-inset); border: 1px solid var(--hud-cyan); font-size: 8px; letter-spacing: .5px; }
+.chip .d { width: 5px; height: 5px; border-radius: 50%; background: var(--hud-cyan); }
+.chip.is-danger  { border-color: var(--hud-danger); }  .chip.is-danger .d  { background: var(--hud-danger); }
+.chip.is-warning { border-color: var(--hud-warning); } .chip.is-warning .d { background: var(--hud-warning); }
+.chip.is-success { border-color: var(--hud-success); } .chip.is-success .d { background: var(--hud-success); }
+
+/* ---------- Voice panel ---------- */
+.voice { position: relative; background: var(--hud-card); border: 1px solid var(--hud-cyan-40); border-radius: var(--r-md); box-shadow: 0 0 10px var(--hud-cyan); overflow: hidden; }
+.voice-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--hud-border); }
+.voice-head .vhl { display:flex; align-items:center; gap:8px; color: var(--hud-cyan); font-size: 11px; letter-spacing: 2px; }
+.voice-body { display: flex; align-items: center; gap: 12px; padding: 12px; }
+.voice-spoken { flex: 1; font-size: 12px; line-height: 1.35; }
+
+/* ---------- Tab bar ---------- */
+.hud-tabbar { height: 70px; display: flex; background: var(--hud-bg); border-top: 1px solid var(--hud-cyan-20); }
+.hud-tab { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 10px 0; color: var(--hud-label); }
+.hud-tab .ul { width: 22px; height: 2px; border-radius: 1px; background: transparent; }
+.hud-tab.is-active { color: var(--hud-cyan); }
+.hud-tab.is-active .ul { background: var(--hud-cyan); box-shadow: 0 0 5px var(--hud-cyan); }
+.hud-tab .lbl { font-size: 8px; letter-spacing: 2px; }
