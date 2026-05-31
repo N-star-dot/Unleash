@@ -54,7 +54,8 @@ import easyocr
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 CONF_NAV    = 0.45
-CONF_STRUCT = 0.80   # high threshold — stairs model overfits on low confidence
+CONF_STAIRS = 0.80
+CONF_DOORS  = 0.45
 CONF_WEAPON = 0.45
 
 NAV_CLASSES = {
@@ -153,19 +154,16 @@ def ambient_level(frame):
     return "dark" if m < 50 else ("dim" if m < 110 else "ok")
 
 def face_in_box(gray, x1, y1, x2, y2):
-    """True if a frontal face is detected in the upper half of the bounding box."""
-    mid_y = (y1 + y2) // 2
-    crop  = gray[y1:mid_y, x1:x2]
+    cut_y = y1 + int((y2 - y1) * 0.7)
+    crop  = gray[y1:cut_y, x1:x2]
     if crop.size == 0:
         return False
-    faces = _FACE_CASCADE.detectMultiScale(crop, scaleFactor=1.1, minNeighbors=3)
+    faces = _FACE_CASCADE.detectMultiScale(crop, scaleFactor=1.1, minNeighbors=1, minSize=(15, 15))
     return len(faces) > 0
 
 def person_is_relevant(vel, prox, facing):
-    """Only emit person if approaching+close OR facing the camera (talking to user)."""
-    if facing:
-        return True
-    return vel == "approaching" and prox == "close"
+    """Emit person if close OR facing camera. Velocity tracked separately for decision agent."""
+    return prox == "close" or facing
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -240,6 +238,7 @@ def main():
                 if not person_is_relevant(vel, prox, facing):
                     seen.add(label)
                     continue   # skip — not approaching or not facing camera
+                interacting = bool(facing) and vel not in ("crossing-L", "crossing-R", "receding")
                 detections.append({
                     "label":          "person",
                     "confidence":     round(conf, 2),
@@ -248,6 +247,7 @@ def main():
                     "velocity":       vel,
                     "collision_risk": risk,
                     "facing_camera":  bool(facing),
+                    "interacting":    interacting,
                 })
             else:
                 detections.append({
@@ -263,14 +263,17 @@ def main():
         # ── Specialist models every 3 frames ──────────────────────────────────
         if frame_n % 3 == 0:
             struct_cache = []
-            for model in filter(None, [stairs_model, doors_model]):
+            for model, threshold in filter(lambda x: x[0], [
+                (stairs_model, CONF_STAIRS),
+                (doors_model,  CONF_DOORS),
+            ]):
                 for box in model(frame, verbose=False)[0].boxes:
                     label = model.names[int(box.cls[0])]
                     conf  = float(box.conf[0])
-                    if conf < CONF_STRUCT: continue
+                    if conf < threshold: continue
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     struct_cache.append({
-                        "label":      label,
+                        "label":      "door" if "door" in label else label,
                         "confidence": round(conf, 2),
                         "side":       side_of((x1+x2)/2, W),
                     })

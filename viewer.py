@@ -21,25 +21,38 @@ import time
 import threading
 
 import cv2
+import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision as mp_vision
 import numpy as np
 from ultralytics import YOLO
 import easyocr
 
-_FACE_CASCADE = cv2.CascadeClassifier(
-    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-)
 
-def _face_in_box(gray, x1, y1, x2, y2):
-    mid_y = (y1 + y2) // 2
-    crop  = gray[y1:mid_y, x1:x2]
-    if crop.size == 0: return False
-    return len(_FACE_CASCADE.detectMultiScale(crop, 1.1, 3)) > 0
+class InteractionTracker:
+    """
+    Requires a face to be locked on for REQUIRED_FRAMES consecutive frames
+    before flagging 'interacting'. Decays quickly when face disappears.
+    At ~15fps, 20 frames ≈ 1.3 seconds of sustained eye contact.
+    """
+    REQUIRED_FRAMES = 20
+
+    def __init__(self):
+        self._count = 0
+
+    def update(self, face_detected: bool) -> bool:
+        if face_detected:
+            self._count = min(self._count + 1, self.REQUIRED_FRAMES + 1)
+        else:
+            self._count = max(self._count - 3, 0)  # decay faster than build
+        return self._count >= self.REQUIRED_FRAMES
 
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 CONF_NAV      = 0.45
-CONF_STRUCT   = 0.80   # stairs/doors — high threshold, model overfits on low confidence
+CONF_STAIRS   = 0.80   # high — small dataset, overfits on linear shapes
+CONF_DOORS    = 0.45   # tested range
 CONF_WEAPON   = 0.45
 
 NAV_CLASSES = {
@@ -181,6 +194,18 @@ def main():
         else:
             print(f"No {name} model found (skipping)", file=sys.stderr)
 
+    print("Loading MediaPipe face detector...", file=sys.stderr)
+    _face_det = mp_vision.FaceDetector.create_from_options(
+        mp_vision.FaceDetectorOptions(
+            base_options=mp_python.BaseOptions(
+                model_asset_path=os.path.join(_BASE, "face_detector.tflite")
+            ),
+            running_mode=mp_vision.RunningMode.VIDEO,
+            min_detection_confidence=0.80,   # high — only clear frontal faces
+        )
+    )
+    interaction_tracker = InteractionTracker()
+
     print("Loading EasyOCR...", file=sys.stderr)
     ocr_worker = OCRWorker(easyocr.Reader(["en"], verbose=False))
 
@@ -205,10 +230,16 @@ def main():
         ret, frame = cap.read()
         if not ret: continue
 
+        # ── Face detector + interaction tracker (every frame) ────────────────
+        rgb_mp     = mp.Image(image_format=mp.ImageFormat.SRGB,
+                              data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        face_res   = _face_det.detect_for_video(rgb_mp, int(time.time() * 1000))
+        # is_interacting only becomes True after ~1.5s of sustained eye contact
+        is_interacting = interaction_tracker.update(len(face_res.detections) > 0)
+
         # ── YOLOv8n — every frame ─────────────────────────────────────────────
         nav_dets: list = []
         seen: set  = set()
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         for box in nav_model(frame, verbose=False)[0].boxes:
             label = nav_model.names[int(box.cls[0])]
@@ -219,28 +250,33 @@ def main():
             cx   = (x1+x2)/2
             side = "L" if cx < W/3 else ("C" if cx < 2*W/3 else "R")
             prox = "close" if (x2-x1)/W > 0.30 else "far"
-            facing = _face_in_box(gray, x1, y1, x2, y2) if label == "person" else False
-            # Filter persons: only show if approaching+close OR facing camera
-            if label == "person" and vel != "approaching" and prox != "close" and not facing:
+            # Show person if close OR sustained eye contact (1.5s+)
+            if label == "person" and prox != "close" and not is_interacting:
                 seen.add(label)
                 continue
             nav_dets.append(dict(label=label, conf=conf, side=side,
                                  prox=prox, vel=vel, risk=risk,
-                                 facing=facing, box=(x1,y1,x2,y2)))
+                                 interacting=is_interacting if label == "person" else False,
+                                 box=(x1,y1,x2,y2)))
             seen.add(label)
 
         # ── Specialist models — every 3 frames ────────────────────────────────
         if frame_n % 3 == 0:
             struct_cache = []
-            for model in filter(None, [stairs_model, doors_model]):
+            for model, threshold in filter(lambda x: x[0], [
+                (stairs_model, CONF_STAIRS),
+                (doors_model,  CONF_DOORS),
+            ]):
                 for box in model(frame, verbose=False)[0].boxes:
                     label = model.names[int(box.cls[0])]
                     conf  = float(box.conf[0])
-                    if conf < CONF_STRUCT: continue
+                    if conf < threshold: continue
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     cx   = (x1+x2)/2
                     side = "L" if cx < W/3 else ("C" if cx < 2*W/3 else "R")
-                    struct_cache.append(dict(label=label, conf=conf, side=side, box=(x1,y1,x2,y2)))
+                    # Normalize door variants to a single label
+                    display_label = "door" if "door" in label else label
+                    struct_cache.append(dict(label=display_label, conf=conf, side=side, box=(x1,y1,x2,y2)))
 
             weapon_cache = []
             if weapon_model:
@@ -285,10 +321,12 @@ def main():
             if d["vel"] == "approaching" and d["prox"] == "close":   color = C_CLOSE
             elif d["vel"] == "approaching" or d["prox"] == "close":  color = C_WARN
             else:                                                      color = C_SAFE
-            cv2.rectangle(frame, (x1,y1), (x2,y2), color, 2)
-            face_tag = " 👁" if d.get("facing") else ""
-            pill(frame, f" {d['label']} {d['conf']:.0%} {d['side']} {d['vel']}{face_tag} ",
-                 x1, max(y1-4, top+18), color)
+            interacting = d.get("interacting", False)
+            if interacting:
+                color = (255, 140, 0)   # blue-orange for interacting person
+            cv2.rectangle(frame, (x1,y1), (x2,y2), color, 3 if interacting else 2)
+            tag = f" {'INTERACTING' if interacting else d['label']} {d['conf']:.0%} {d['side']} {d['vel']} "
+            pill(frame, tag, x1, max(y1-4, top+18), color)
 
         for d in struct_cache:
             x1, y1, x2, y2 = d["box"]
@@ -328,6 +366,7 @@ def main():
         if cv2.waitKey(1) & 0xFF == ord("q"): break
 
     cap.release()
+    _face_det.close()
     cv2.destroyAllWindows()
     print("Stopped.", file=sys.stderr)
 
