@@ -1,22 +1,31 @@
 """
 Perception Agent — real-time JSON stream for the decision/memory system.
 
-Runs headlessly, prints one JSON line per frame (only when non-empty) to stdout.
-All status/debug goes to stderr so stdout stays pipe-clean.
+Runs headlessly, emits one JSON line per frame to stdout (only when non-empty).
+All status/debug goes to stderr. No voice — that belongs in the decision agent.
+
+Person filter: only emitted when approaching+close OR facing camera (face visible).
+This keeps the feed signal-dense rather than noisy.
 
 Output contract:
 {
   "timestamp": <unix_ms>,
   "scene": "street" | "indoor" | "nature" | "unknown",
   "ambient_light": "ok" | "dim" | "dark",
-  "crowd_count": <int>,
-  "detections": [
-    {"label": "person", "confidence": 0.88, "side": "left"|"center"|"right",
-     "proximity": "close"|"far", "velocity": "approaching"|"receding"|
-     "crossing-L"|"crossing-R"|"stationary"|"unknown", "collision_risk": 0.72}
+  "crowd_count": <int>,          // total persons visible (even if not emitted)
+  "detections": [                // non-person obstacles + filtered persons
+    {
+      "label": "person"|"car"|...,
+      "confidence": 0.88,
+      "side": "left"|"center"|"right",
+      "proximity": "close"|"far",
+      "velocity": "approaching"|"receding"|"crossing-L"|"crossing-R"|"stationary"|"unknown",
+      "collision_risk": 0.72,
+      "facing_camera": true|false   // persons only — face detected in bbox
+    }
   ],
   "hazards": [
-    {"label": "stairs"|"door-open"|"door-closed"|..., "confidence": 0.85, "side": "center"}
+    {"label": "stairs"|"door-open"|..., "confidence": 0.85, "side": "center"}
   ],
   "threats": [
     {"label": "knife"|"gun", "confidence": 0.72, "side": "right"}
@@ -25,9 +34,8 @@ Output contract:
 }
 
 Usage:
-    python perception.py                    # camera 1
     python perception.py --camera 0
-    python perception.py --camera 0 | tee detections.jsonl   # log + pipe
+    python perception.py --camera 0 | python decision_agent.py
 """
 
 import argparse
@@ -50,11 +58,6 @@ CONF_STAIRS = 0.80
 CONF_DOORS  = 0.45
 CONF_WEAPON = 0.45
 
-# Face detector for "facing camera" / "talking to me" signal
-_FACE_CASCADE = cv2.CascadeClassifier(
-    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-)
-
 NAV_CLASSES = {
     "person", "bicycle", "car", "motorcycle", "bus", "truck",
     "traffic light", "stop sign", "fire hydrant", "bench",
@@ -73,6 +76,11 @@ DOORS_MODEL_PATH  = os.path.join(_BASE, "models/doors_run/train/weights/best.pt"
 WEAPON_MODEL_PATH = os.path.join(_BASE, "models/weapons/train/weights/best.pt")
 if not os.path.exists(WEAPON_MODEL_PATH):
     WEAPON_MODEL_PATH = os.path.join(_BASE, "best.pt")
+
+# Face detector for "facing camera" / "talking to me" signal
+_FACE_CASCADE = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+)
 
 
 # ─── Motion tracker ───────────────────────────────────────────────────────────
@@ -160,7 +168,10 @@ def person_is_relevant(vel, prox, facing):
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
-def vision_generator(camera_index=1):
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--camera", type=int, default=int(os.environ.get("CAMERA_INDEX", "1")))
+    args = ap.parse_args()
 
     print("Loading YOLOv8n...", file=sys.stderr)
     nav_model = YOLO("yolov8n.pt")
@@ -183,23 +194,22 @@ def vision_generator(camera_index=1):
     print("Loading EasyOCR...", file=sys.stderr)
     ocr_worker = OCRWorker(easyocr.Reader(["en"], verbose=False))
 
-    cap = cv2.VideoCapture(camera_index, cv2.CAP_AVFOUNDATION)
+    cap = cv2.VideoCapture(args.camera, cv2.CAP_AVFOUNDATION)
     if not cap.isOpened():
-        yield None, {"error": f"Cannot open camera {camera_index}. Try changing the Camera Index to 0 or 2."}
-        return
+        print(f"ERROR: cannot open camera {args.camera}. Run list_cams.py.", file=sys.stderr)
+        sys.exit(1)
 
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"Camera {camera_index}: {W}x{H}. Starting generator...", file=sys.stderr)
+    print(f"Camera {args.camera}: {W}x{H}. Ctrl-C to stop.", file=sys.stderr)
 
-    tracker     = Tracker()
-    frame_n     = 0
+    tracker      = Tracker()
+    frame_n      = 0
     struct_cache: list = []
     weapon_cache: list = []
 
     while True:
         ret, frame = cap.read()
-        print(f"DEBUG: cap.read() returned ret={ret}", file=sys.stderr)
         if not ret:
             time.sleep(0.02)
             continue
@@ -215,7 +225,7 @@ def vision_generator(camera_index=1):
             label = nav_model.names[int(box.cls[0])]
             conf  = float(box.conf[0])
             if label not in NAV_CLASSES or conf < CONF_NAV: continue
-            
+
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             vel, risk = tracker.update(label, x1, y1, x2, y2, W, H)
             cx   = (x1+x2)/2
@@ -285,24 +295,21 @@ def vision_generator(camera_index=1):
         if frame_n % 20 == 0:
             ocr_worker.submit(frame)
 
-        # ── Emit JSON and Frame ───────────────────────────────────────────────
-        payload = None
+        # ── Emit JSON ─────────────────────────────────────────────────────────
         if detections or struct_cache or weapon_cache:
-            payload = {
-                "timestamp":    int(time.time() * 1000),
-                "scene":        classify_scene(seen),
+            print(json.dumps({
+                "timestamp":     int(time.time() * 1000),
+                "scene":         classify_scene(seen),
                 "ambient_light": ambient_level(frame),
-                "crowd_count":  total_ppl,
-                # Calculate max risk dynamically for the Conflict Bus
-                "risk_level":   "HIGH" if weapon_cache or struct_cache else ("MED" if len(detections) > 3 else "LOW"),
-                "detections":   detections,
-                "hazards":      struct_cache,
-                "threats":      weapon_cache,
+                "crowd_count":   total_ppl,
+                "detections":    detections,
+                "hazards":       struct_cache,
+                "threats":       weapon_cache,
                 "text_detected": ocr_worker.get(),
-            }
+            }), flush=True)
 
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        yield frame_rgb, payload
         frame_n += 1
 
-    cap.release()
+
+if __name__ == "__main__":
+    main()
