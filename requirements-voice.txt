@@ -1,0 +1,29 @@
+# Unleash — Voice / Location / Calendar feature dependencies
+# (kept separate so it doesn't disturb the existing requirements.txt)
+#
+# Install:  pip install -r requirements-voice.txt
+
+# Core (shared with the rest of Unleash)
+streamlit>=1.31.0          # UI + st.audio_input mic widget
+google-genai>=0.3.0        # Gemini: STT, intent routing, general chat
+weave>=0.50.0              # optional cloud tracing (@weave.op)
+python-dotenv>=1.0.0       # load .env
+
+# Text-to-speech for Streamlit (mp3 bytes -> st.audio, plays in any browser)
+gTTS>=2.5.0
+pyttsx3>=2.90             # desktop/CLI fallback (macOS uses built-in `say`)
+
+# Real browser GPS in Streamlit (HTML5 geolocation). Optional — falls back to IP.
+streamlit-geolocation>=0.0.10
+
+# Google Calendar API (optional — falls back to local events.json if absent)
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.2.0
+
+# Mic capture for the non-Streamlit CLI path only (optional):
+# sounddevice>=0.4.6
+# soundfile>=0.12.1
+#
+# Location reverse-geocoding uses free, key-less OpenStreetMap Nominatim +
+# ip-api.com via the standard library — no extra package required.

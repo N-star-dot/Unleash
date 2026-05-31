@@ -1,0 +1,51 @@
+{
+  "_comment": "Local calendar store for the Unleash Calendar agent. Swap this out for the Google Calendar API later (see calendar_agent.py docstring). Times are local 24h 'HH:MM'. 'date' is YYYY-MM-DD; omit 'date' for a recurring/daily item.",
+  "user_id": "user_thtrang_06",
+  "timezone": "America/New_York",
+  "events": [
+    {
+      "id": "evt-001",
+      "title": "Dentist appointment",
+      "date": "TODAY",
+      "start": "16:00",
+      "end": "16:45",
+      "location": "Dr. Patel, 210 Beacon St",
+      "notes": "Bring insurance card."
+    },
+    {
+      "id": "evt-002",
+      "title": "Lunch with Maria",
+      "date": "TODAY",
+      "start": "12:30",
+      "end": "13:30",
+      "location": "Tatte Bakery, Harvard Sq",
+      "notes": ""
+    },
+    {
+      "id": "evt-003",
+      "title": "Physical therapy",
+      "date": "TODAY",
+      "start": "09:00",
+      "end": "10:00",
+      "location": "Mass General",
+      "notes": "Mobility session."
+    },
+    {
+      "id": "evt-004",
+      "title": "Call with mom",
+      "date": "TODAY",
+      "start": "18:30",
+      "end": "19:00",
+      "location": "Home",
+      "notes": ""
+    },
+    {
+      "id": "evt-005",
+      "title": "Medication reminder",
+      "start": "08:00",
+      "end": "08:05",
+      "location": "Home",
+      "notes": "Daily. Take with food."
+    }
+  ]
+}
