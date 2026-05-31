@@ -1,5 +1,6 @@
 venv/
 __pycache__/
+models/
 *.pt
 *.task
 *.pyc
