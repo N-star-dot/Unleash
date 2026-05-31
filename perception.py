@@ -1,27 +1,34 @@
 """
-Perception Agent — Obstacle detection for visually impaired users.
-Reads frames from iPhone (Continuity Camera), runs YOLOv8n, emits JSON lines
-to stdout. Stderr is used for status/debug so stdout stays pipe-clean.
+Perception Agent — Unleash service dog.
 
-Output contract (one JSON line per frame, only when detections are non-empty):
+Real-time obstacle + hazard detection feeding the decision/memory brain (app.py).
+Two entry points share ONE detection core, so the Streamlit app and the CLI stay
+in sync:
+
+    vision_generator(camera_index)  -> generator of (frame_rgb, payload)  [ui.py]
+    main()                          -> headless JSON-lines stream to stdout [CLI / piping]
+
+What it detects
+  * People & street objects — COCO YOLOv8n, every frame, with interaction tracking
+    (approaching / crossing / collision_risk): the "is it coming at me?" signal.
+  * Structural hazards — stairs, doors, ladders — every Nth frame. Uses custom
+    weights under models/ if present (drop in trained stairs/doors detectors),
+    otherwise falls back to the Open Images V7 model, which knows Door/Stairs/Ladder
+    out of the box. Swap or tune the weights later without touching anything else.
+
+JSON payload contract (consumed by app.py:process_vision_queue + the orchestrator):
 {
   "timestamp": <unix_ms>,
-  "scene": "street" | "indoor" | "nature" | "unknown",
-  "ambient_light": "ok" | "dim" | "dark",
+  "scene": "street"|"indoor"|"nature"|"unknown",
+  "ambient_light": "ok"|"dim"|"dark",
   "crowd_count": <int>,
-  "risk_level": "LOW" | "MED" | "HIGH",
-  "detections": [
-    {
-      "label": "person",
-      "confidence": 0.87,
-      "side": "left" | "center" | "right",
-      "proximity": "close" | "far",
-      "velocity": "approaching" | "receding" | "crossing-L" | "crossing-R" | "stationary" | "unknown",
-      "collision_risk": 0.72
-    }
-  ]
+  "risk_level": "LOW"|"MED"|"HIGH",        # drives the brain's VisionAlert
+  "detections": [ {label, confidence, side, proximity, velocity, collision_risk} ],
+  "hazards":    [ {label: "stairs"|"door"|"ladder", confidence, side, proximity} ]
 }
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -31,35 +38,45 @@ import time
 
 import cv2
 import numpy as np
-from ultralytics import YOLO
 
-DANGER_CLASSES = {
+_BASE = os.path.dirname(os.path.abspath(__file__))
+
+# ── detection config ─────────────────────────────────────────────────────────
+CONF_NAV = 0.45
+CONF_STRUCT = 0.40           # oiv7 stairs/doors; raise if a custom model overfits
+STRUCT_EVERY = 3             # run the (heavier) structural model every Nth frame
+
+NAV_CLASSES = {
     "person", "bicycle", "car", "motorcycle", "bus", "truck",
     "traffic light", "stop sign", "fire hydrant", "bench",
     "dog", "cat", "chair", "dining table", "couch",
 }
-
-CONF_THRESHOLD = 0.5
-
 SCENE_MAP = {
     "street": {"car", "truck", "bus", "traffic light", "stop sign", "motorcycle", "bicycle"},
     "indoor": {"chair", "dining table", "couch", "tv", "laptop", "keyboard"},
     "nature": {"bench", "bird", "dog", "cat"},
 }
+# Open-Images-V7 class names we treat as structural hazards (fallback weights).
+OIV7_STRUCT = {"door", "stairs", "ladder", "escalator"}
+
+# Drop trained weights here (e.g. Sofi's). If any exist they REPLACE the oiv7
+# fallback, so tuning later is just a matter of dropping in .pt files.
+CUSTOM_STRUCT_PATHS = [
+    os.path.join(_BASE, "models/stairs/train/weights/best.pt"),
+    os.path.join(_BASE, "models/doors_run/train/weights/best.pt"),
+]
 
 
-def get_side(cx: float, frame_width: int) -> str:
-    third = frame_width / 3
-    if cx < third:       return "left"
-    if cx < 2 * third:   return "center"
-    return "right"
+def _side(cx: float, W: int) -> str:
+    return "left" if cx < W / 3 else ("center" if cx < 2 * W / 3 else "right")
 
 
-def get_proximity(box_width: float, frame_width: int) -> str:
-    return "close" if (box_width / frame_width) > 0.3 else "far"
+def _ambient(frame) -> str:
+    m = float(np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)))
+    return "dark" if m < 50 else ("dim" if m < 110 else "ok")
 
 
-def classify_scene(seen: set) -> str:
+def _scene(seen: set) -> str:
     best, n = "unknown", 0
     for scene, keys in SCENE_MAP.items():
         k = len(keys & seen)
@@ -68,112 +85,211 @@ def classify_scene(seen: set) -> str:
     return best
 
 
-def ambient_level(frame) -> str:
-    m = np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
-    return "dark" if m < 50 else ("dim" if m < 110 else "ok")
+def _norm_struct(label: str) -> str:
+    """Normalise a structural class name to stairs/door/ladder/escalator."""
+    l = label.lower()
+    if "stair" in l:
+        return "stairs"
+    if "ladder" in l:
+        return "ladder"
+    if "escalator" in l:
+        return "escalator"
+    if "door" in l and "handle" not in l:
+        return "door"
+    return l
 
 
 class Tracker:
-    """Nearest-neighbour velocity + collision risk estimator (same as viewer.py)."""
+    """Nearest-neighbour velocity + collision-risk per label (the interaction signal)."""
+
     def __init__(self):
         self._hist: dict = {}
 
     def update(self, label, x1, y1, x2, y2, W, H):
-        cx   = (x1 + x2) / 2.0
-        cy   = (y1 + y2) / 2.0
+        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
         area = (x2 - x1) * (y2 - y1)
         vel, risk = "unknown", 0.20
         prev = self._hist.get(label, [])
         if prev:
-            best       = min(prev, key=lambda p: (cx-p[0])**2 + (cy-p[1])**2)
-            ratio      = area / best[2] if best[2] > 0 else 1.0
-            dx         = cx - best[0]
-            if   ratio > 1.10:          vel = "approaching"
-            elif ratio < 0.90:          vel = "receding"
-            elif abs(dx) > W * 0.015:   vel = "crossing-L" if dx < 0 else "crossing-R"
-            else:                       vel = "stationary"
+            best = min(prev, key=lambda p: (cx - p[0]) ** 2 + (cy - p[1]) ** 2)
+            ratio = area / best[2] if best[2] > 0 else 1.0
+            dx = cx - best[0]
+            if ratio > 1.10:
+                vel = "approaching"
+            elif ratio < 0.90:
+                vel = "receding"
+            elif abs(dx) > W * 0.015:
+                vel = "crossing-L" if dx < 0 else "crossing-R"
+            else:
+                vel = "stationary"
             norm = min(1.0, area / (W * H * 0.20))
-            risk = min(1.0, norm * 0.6 + max(0., (ratio-1.)*3.) * 0.4)
-            if vel == "receding": risk *= 0.25
+            risk = min(1.0, norm * 0.6 + max(0.0, (ratio - 1.0) * 3.0) * 0.4)
+            if vel == "receding":
+                risk *= 0.25
         b = self._hist.setdefault(label, [])
         b.append((cx, cy, area))
         self._hist[label] = b[-4:]
         return vel, round(risk, 2)
 
 
-def vision_generator(camera_index=1):
-    print("Loading YOLOv8n model...", file=sys.stderr)
-    model = YOLO("yolov8n.pt")
-    tracker = Tracker()
+class Perception:
+    """Per-frame detection core shared by the Streamlit generator and the CLI."""
 
+    def __init__(self):
+        self.tracker = Tracker()
+        self.frame_n = 0
+        self._struct_cache: list = []
+        self._nav = None
+        self._struct: list = []           # list of YOLO models
+        self._struct_custom = False
+
+    def _load(self):
+        if self._nav is not None:
+            return
+        from ultralytics import YOLO       # lazy import keeps `import perception` light
+        self._nav = YOLO(os.path.join(_BASE, "yolov8n.pt"))
+        existing = [p for p in CUSTOM_STRUCT_PATHS if os.path.exists(p)]
+        if existing:
+            self._struct = [YOLO(p) for p in existing]
+            self._struct_custom = True
+            print(f"[perception] custom structural weights: {existing}", file=sys.stderr)
+        else:
+            self._struct = [YOLO("yolov8n-oiv7.pt")]   # auto-downloads once, then cached
+            self._struct_custom = False
+            print("[perception] Open Images V7 fallback for stairs/doors", file=sys.stderr)
+
+    def analyze(self, frame):
+        """frame (BGR ndarray) -> (annotated_rgb, payload|None)."""
+        self._load()
+        H, W = frame.shape[:2]
+        detections, seen = [], set()
+
+        # ── nav model: people + street objects, every frame ──────────────────
+        for box in self._nav(frame, verbose=False)[0].boxes:
+            label = self._nav.names[int(box.cls[0])]
+            conf = float(box.conf[0])
+            if label not in NAV_CLASSES or conf < CONF_NAV:
+                continue
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            vel, risk = self.tracker.update(label, x1, y1, x2, y2, W, H)
+            prox = "close" if (x2 - x1) / W > 0.30 else "far"
+            detections.append({
+                "label": label, "confidence": round(conf, 2),
+                "side": _side((x1 + x2) / 2, W), "proximity": prox,
+                "velocity": vel, "collision_risk": risk,
+            })
+            seen.add(label)
+            color = (0, 0, 255) if (prox == "close" or vel == "approaching") else (0, 200, 0)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(frame, f"{label} {vel}", (x1, max(y1 - 6, 12)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+        # ── structural model: stairs/doors, every Nth frame (cached between) ──
+        if self.frame_n % STRUCT_EVERY == 0:
+            hazards = []
+            for model in self._struct:
+                for box in model(frame, verbose=False)[0].boxes:
+                    raw = model.names[int(box.cls[0])]
+                    conf = float(box.conf[0])
+                    if conf < CONF_STRUCT:
+                        continue
+                    if not self._struct_custom and raw.lower() not in OIV7_STRUCT:
+                        continue
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    hazards.append({
+                        "label": _norm_struct(raw), "confidence": round(conf, 2),
+                        "side": _side((x1 + x2) / 2, W),
+                        "proximity": "close" if (x2 - x1) / W > 0.30 else "far",
+                        "_box": (x1, y1, x2, y2),
+                    })
+            self._struct_cache = hazards
+        for h in self._struct_cache:
+            x1, y1, x2, y2 = h["_box"]
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 140, 255), 2)
+            cv2.putText(frame, h["label"], (x1, max(y1 - 6, 12)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 140, 255), 2)
+
+        self.frame_n += 1
+        hazards_out = [{k: v for k, v in h.items() if k != "_box"} for h in self._struct_cache]
+        crowd = sum(1 for d in detections if d["label"] == "person")
+        payload = None
+        if detections or hazards_out:
+            payload = {
+                "timestamp": int(time.time() * 1000),
+                "scene": _scene(seen),
+                "ambient_light": _ambient(frame),
+                "crowd_count": crowd,
+                "risk_level": self._risk(detections, hazards_out, crowd),
+                "detections": detections,
+                "hazards": hazards_out,
+            }
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), payload
+
+    @staticmethod
+    def _risk(detections, hazards, crowd) -> str:
+        """Fuse collision risk, structural hazards and crowd into LOW/MED/HIGH."""
+        max_coll = max((d["collision_risk"] for d in detections), default=0.0)
+        level = 2 if max_coll > 0.60 else (1 if max_coll > 0.35 else 0)
+        for h in hazards:
+            if h["label"] == "stairs":               # fall hazard = most critical for VI users
+                level = max(level, 2 if h["proximity"] == "close" else 1)
+            elif h["proximity"] == "close":          # door/ladder right ahead = obstacle
+                level = max(level, 1)
+        if crowd > 5:
+            level = max(level, 2)
+        elif crowd >= 3:
+            level = max(level, 1)
+        return ("LOW", "MED", "HIGH")[level]
+
+
+def vision_generator(camera_index=1):
+    """Yield (frame_rgb, payload) per frame for Streamlit. (None, {'error'}) on failure."""
+    percep = Perception()
     cap = cv2.VideoCapture(camera_index, cv2.CAP_AVFOUNDATION)
     if not cap.isOpened():
-        # Fallback to default index if macOS AVFOUNDATION fails
-        cap = cv2.VideoCapture(0)
-    
+        cap = cv2.VideoCapture(0)        # fall back to default index
     if not cap.isOpened():
         yield None, {"error": "Camera not found"}
         return
-
-    W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            time.sleep(0.05)
-            continue
-
-        results = model(frame, verbose=False)[0]
-        detections = []
-        seen: set = set()
-
-        for box in results.boxes:
-            label = model.names[int(box.cls[0])]
-            conf = float(box.conf[0])
-            if label not in DANGER_CLASSES or conf < CONF_THRESHOLD:
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                time.sleep(0.05)
                 continue
+            yield percep.analyze(frame)
+    finally:
+        cap.release()
 
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            bw = x2 - x1
-            cx = (x1 + x2) / 2
-            side = get_side(cx, W)
-            prox = get_proximity(bw, W)
-            vel, risk = tracker.update(label, x1, y1, x2, y2, W, H)
 
-            detections.append({
-                "label": label,
-                "confidence": round(conf, 2),
-                "side": side,
-                "proximity": prox,
-                "velocity": vel,
-                "collision_risk": risk,
-            })
-            seen.add(label)
+def main():
+    ap = argparse.ArgumentParser(description="Unleash perception — headless JSON stream")
+    ap.add_argument("--camera", type=int, default=int(os.environ.get("CAMERA_INDEX", "1")))
+    args = ap.parse_args()
 
-            color = (0, 255, 0) if prox == "far" else (0, 0, 255)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(frame, f"{label} {conf:.2f} {side} {vel}",
-                        (x1, max(y1 - 8, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+    percep = Perception()
+    cap = cv2.VideoCapture(args.camera, cv2.CAP_AVFOUNDATION)
+    if not cap.isOpened():
+        cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print(json.dumps({"error": f"cannot open camera {args.camera}; run list_cams.py"}), flush=True)
+        sys.exit(1)
 
-        # Convert to RGB for Streamlit rendering
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        payload = None
-        if detections:
-            crowd = sum(1 for d in detections if d["label"] == "person")
-            max_r = max(d["collision_risk"] for d in detections)
-            rl = "HIGH" if max_r > 0.60 else ("MED" if max_r > 0.35 else "LOW")
-            payload = {
-                "timestamp": int(time.time() * 1000),
-                "scene": classify_scene(seen),
-                "ambient_light": ambient_level(frame),
-                "crowd_count": crowd,
-                "risk_level": rl,
-                "detections": detections,
-            }
+    print(f"[perception] camera {args.camera} open; Ctrl-C to stop.", file=sys.stderr)
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                time.sleep(0.02)
+                continue
+            _, payload = percep.analyze(frame)
+            if payload:
+                print(json.dumps(payload), flush=True)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        cap.release()
 
-        yield frame_rgb, payload
 
-    cap.release()
+if __name__ == "__main__":
+    main()

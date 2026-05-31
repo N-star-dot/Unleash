@@ -19,8 +19,16 @@ os.environ["MEM0_TELEMETRY"] = "false"
 # =====================================================================
 # 1. INITIALIZATION & CONFIGURATION
 # =====================================================================
-# Initialize Weights & Biases Weave tracking
-weave.init("nghiatr38-boston-university/project-argus-service-dog")
+# Initialize Weights & Biases Weave tracking.
+# Project is overridable via WEAVE_PROJECT. Never let a W&B outage or permission
+# issue crash the app — tracing is a nice-to-have, not required to run.
+WEAVE_PROJECT = os.environ.get(
+    "WEAVE_PROJECT", "nghiatr38-boston-university/project-argus-service-dog"
+)
+try:
+    weave.init(WEAVE_PROJECT)
+except Exception as e:
+    print(f"[weave] cloud tracing disabled ({type(e).__name__}); continuing without it.")
 
 # Configure Mem0 to use Gemini for its underlying vector extraction
 mem0_config = {

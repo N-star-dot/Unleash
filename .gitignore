@@ -6,3 +6,6 @@ __pycache__/
 weave/
 wandb/
 .claude-flow/
+# model weights (auto-downloaded or custom-trained; not committed)
+yolov8n-oiv7.pt
+models/
