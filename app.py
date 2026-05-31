@@ -6,6 +6,11 @@ from mem0 import Memory
 import weave
 from google import genai
 from google.genai import types
+import requests
+
+# Disable Mem0's internal telemetry to prevent hidden Qdrant lock crashes in Streamlit
+os.environ["MEM0_ENABLE_TELEMETRY"] = "false"
+os.environ["MEM0_TELEMETRY"] = "false"
 
 # =====================================================================
 # 1. INITIALIZATION & CONFIGURATION
@@ -15,6 +20,7 @@ weave.init("nghiatr38-boston-university/project-argus-service-dog")
 
 # Configure Mem0 to use Gemini for its underlying vector extraction
 mem0_config = {
+    "history_db_path": "mem0_history.db",
     "llm": {
         "provider": "gemini",
         "config": {
@@ -32,6 +38,8 @@ mem0_config = {
     "vector_store": {
         "provider": "qdrant",
         "config": {
+            "collection_name": "argus_memory",
+            "path": ":memory:",
             "embedding_model_dims": 768
         }
     }
@@ -79,13 +87,19 @@ def process_biometrics(telemetry: dict) -> dict:
 def process_vision_queue(telemetry: dict) -> dict:
     """Agent 1b: Evaluates computer vision object density streams."""
     claims = []
+    
+    # Check for live YOLO schema fields
+    risk_level = telemetry.get("risk_level", "LOW")
+    crowd_count = telemetry.get("crowd_count", 0)
+    
+    # Also support the old mock field 'crowd_density' for the Streamlit buttons
     crowd_density = telemetry.get("crowd_density", 0)
     
-    if crowd_density > 0.8:
+    if risk_level == "HIGH" or crowd_count > 5 or crowd_density > 0.8:
         claims.append({
             "source": "ComputerVisionAgent",
             "type": "VisionAlert",
-            "value": crowd_density,
+            "value": f"Risk: {risk_level}, Crowd: {crowd_count}",
             "timestamp": time.time(),
             "ttl": 30
         })
@@ -183,15 +197,42 @@ def retrospective_agent(state: ConflictBusState, resolution_success: bool):
         user_id="user_thtrang_06"
     )
 
+def _trigger_bland_ai_call(reason: str) -> str:
+    """Helper to dispatch a live AI voice call via Bland AI."""
+    bland_api_key = os.environ.get("BLAND_API_KEY")
+    caregiver_phone = os.environ.get("CAREGIVER_PHONE")
+    
+    if not bland_api_key or not caregiver_phone:
+        return "[SIMULATED BLAND AI] Missing BLAND_API_KEY or CAREGIVER_PHONE env vars. Simulated call dispatched."
+        
+    url = "https://api.bland.ai/v1/calls"
+    headers = {"authorization": bland_api_key, "Content-Type": "application/json"}
+    
+    payload = {
+        "phone_number": caregiver_phone,
+        "task": f"Hello, this is Project ARGUS. The user is experiencing a severe distress episode labeled as: {reason}. The digital service dog is on-site providing support, but human intervention is requested.",
+        "voice": "nat", 
+        "reduce_latency": True
+    }
+    
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        response.raise_for_status()
+        return f"[BLAND AI LIVE] Emergency AI call successfully dispatched to {caregiver_phone}."
+    except requests.exceptions.RequestException as e:
+        return f"[BLAND AI ERROR] Failed to dispatch call: {str(e)}"
+
 @weave.op()
 def action_dispatcher(state: ConflictBusState) -> dict:
     """Agent 5: Physically executes the chosen directives via external APIs."""
     action = state.get("final_action", "")
+    predictions = state.get("active_predictions", [])
+    reason_context = predictions[-1]["description"] if predictions else "Unknown physiological anomaly"
     
     # Mock routing table for physical actions
     if "emergency services" in action.lower():
-        # e.g., trigger Twilio API
-        return {"execution_status": "[TWILIO API] Initiating automated phone call to 911 and emergency contacts..."}
+        status = _trigger_bland_ai_call(reason_context)
+        return {"execution_status": status}
     elif "airpods" in action.lower():
         # e.g., trigger Apple HealthKit/Bluetooth
         return {"execution_status": "[BLUETOOTH API] Sending audio file to paired AirPods..."}

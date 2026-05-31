@@ -119,3 +119,60 @@ with col3:
             "fall_detected": False
         }
         execute_scenario("Panic Attack Onset (Elevated HR + Low HRV)", payload)
+
+# -------------------------------------------------------------
+# Live Computer Vision Feed
+# -------------------------------------------------------------
+st.write("---")
+st.header("Live Computer Vision Feed")
+st.markdown("Enable this to run the local YOLOv8 object detection model. The feed will automatically trigger the LangGraph pipeline if a high-risk collision or crowd density is detected.")
+
+if st.sidebar.checkbox("🔴 Enable Live YOLO Camera", help="Requires OpenCV and Ultralytics. High CPU usage."):
+    try:
+        from perception import vision_generator
+        st.subheader("Live YOLOv8 Inference")
+        
+        col_cam, col_status = st.columns([2, 1])
+        cam_placeholder = col_cam.empty()
+        status_placeholder = col_status.empty()
+        
+        last_trigger_time = 0
+        COOLDOWN_SECONDS = 15  # 15 seconds is optimal for a hackathon demo
+        
+        for frame_rgb, payload in vision_generator(camera_index=1):
+            if frame_rgb is not None:
+                cam_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
+                
+            if payload:
+                if "error" in payload:
+                    st.error(payload["error"])
+                    break
+                    
+                status_placeholder.info(
+                    f"**Scene**: {payload['scene']}\n\n"
+                    f"**Crowd Count**: {payload['crowd_count']}\n\n"
+                    f"**Risk Level**: {payload['risk_level']}"
+                )
+                
+                # Auto-trigger if danger is detected AND cooldown has passed
+                if payload['risk_level'] == 'HIGH':
+                    current_time = time.time()
+                    if current_time - last_trigger_time > COOLDOWN_SECONDS:
+                        st.warning("⚠️ High Risk Detected! Pausing feed for Agent Analysis...")
+                        
+                        # Merge CV payload with base biological metrics
+                        full_payload = {
+                            "heart_rate": 85,
+                            "hrv": 45,
+                            **payload
+                        }
+                        execute_scenario("Live Vision Hazard Detected", full_payload)
+                        
+                        last_trigger_time = time.time()
+                        st.success(f"✅ Analysis saved to Mem0! Resuming camera feed (Cooldown: {COOLDOWN_SECONDS}s)")
+                    else:
+                        time_left = int(COOLDOWN_SECONDS - (current_time - last_trigger_time))
+                        status_placeholder.warning(f"Hazard tracked. Pipeline in cooldown for {time_left}s...")
+                        
+    except ImportError:
+        st.error("Missing CV dependencies. Please run: pip install opencv-python ultralytics")
