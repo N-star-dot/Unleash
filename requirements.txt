@@ -1,4 +1,17 @@
-ultralytics>=8.0.0
-opencv-python>=4.8.0
-easyocr>=1.7.0
-mediapipe>=0.10.0
+# Unleash — runtime dependencies
+# Install:  pip install -r requirements.txt
+
+# --- Web UI ---
+streamlit>=1.40.0
+
+# --- Agent brain / LLM + memory ---
+mem0ai>=0.1.40          # provides `mem0` (Memory.from_config, Gemini llm+embedder, Qdrant store)
+google-genai>=1.0.0     # provides `google.genai` (Gemini 2.5 Flash orchestrator)
+weave>=0.51.0           # W&B Weave tracing (@weave.op); pulls in wandb
+requests>=2.31.0        # Bland AI emergency call (REST)
+python-dotenv>=1.0.0    # load GEMINI_API_KEY etc. from .env
+
+# --- Computer vision (perception.py) ---
+ultralytics>=8.0.0      # YOLOv8n object detection
+opencv-python>=4.8.0    # camera capture + drawing
+numpy>=1.26.0           # frame math / ambient-light estimate

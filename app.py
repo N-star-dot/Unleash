@@ -7,6 +7,10 @@ import weave
 from google import genai
 from google.genai import types
 import requests
+from dotenv import load_dotenv
+
+# Load secrets from a local .env file if present (GEMINI_API_KEY, WANDB_API_KEY, etc.)
+load_dotenv()
 
 # Disable Mem0's internal telemetry to prevent hidden Qdrant lock crashes in Streamlit
 os.environ["MEM0_ENABLE_TELEMETRY"] = "false"

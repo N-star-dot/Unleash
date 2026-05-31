@@ -5,3 +5,4 @@ __pycache__/
 .qdrant/
 weave/
 wandb/
+.claude-flow/
