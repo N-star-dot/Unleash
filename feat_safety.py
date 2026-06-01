@@ -433,12 +433,30 @@ def _detection_chips(payload: dict) -> list[dict]:
     return items
 
 
-def _run_live_camera(cam_index: int, arm_real_calls: bool) -> None:
-    """Loop perception.vision_generator for a bounded number of frames.
+def _close_cam_gen() -> None:
+    """Close + drop the cached generator so vision_generator's finally releases
+    the camera. Safe to call when no generator is cached (idempotent)."""
+    gen = st.session_state.pop("cam_gen", None)
+    st.session_state.pop("cam_gen_index", None)
+    if gen is not None:
+        try:
+            gen.close()
+        except Exception:  # noqa: BLE001
+            pass
 
-    Stops on frame budget, on the checkbox being unticked, or on a camera error.
-    Auto-runs the pipeline on the first HIGH-risk frame (cooldown-guarded). The
-    generator is always closed in a finally so the camera is released.
+
+def _run_live_camera(cam_index: int, arm_real_calls: bool) -> None:
+    """Read a bounded batch from a PERSISTENT perception.vision_generator.
+
+    Flicker fix: the generator is created ONCE and cached in
+    st.session_state["cam_gen"] across reruns, so the camera stays open
+    continuously instead of being opened+released every rerun. Each rerun reads a
+    bounded batch (~_MAX_FRAMES) into the placeholders then st.rerun()s — the
+    generator is NOT closed at the end of a normal batch. It is only closed
+    (via _close_cam_gen) when the camera index changes here, or by the caller
+    when the checkbox is OFF / the source switches away / on error.
+
+    Auto-runs the pipeline on the first HIGH-risk frame (cooldown-guarded).
     """
     try:
         from perception import vision_generator
@@ -454,16 +472,31 @@ def _run_live_camera(cam_index: int, arm_real_calls: bool) -> None:
     chip_box = st.empty()
     triggered = False
 
-    try:
-        gen = vision_generator(camera_index=int(cam_index))
-    except Exception as exc:  # noqa: BLE001
-        st.warning(f"Camera/vision error: {exc}")
-        return
+    # Reuse the cached generator; rebuild only if absent or the index changed.
+    # Changing the index releases the old camera first (no double-open flicker).
+    if st.session_state.get("cam_gen_index") != int(cam_index):
+        _close_cam_gen()
+    gen = st.session_state.get("cam_gen")
+    if gen is None:
+        try:
+            gen = vision_generator(camera_index=int(cam_index))
+        except Exception as exc:  # noqa: BLE001
+            st.warning(f"Camera/vision error: {exc}")
+            return
+        st.session_state["cam_gen"] = gen
+        st.session_state["cam_gen_index"] = int(cam_index)
 
+    stop_feed = False
     try:
-        for i, (frame_rgb, payload) in enumerate(gen):
-            # Stop: frame budget reached or the checkbox was unticked.
-            if i >= _MAX_FRAMES or not st.session_state.get("feat_safety_cam", True):
+        for i in range(_MAX_FRAMES):
+            # Stop if the checkbox was unticked between reruns.
+            if not st.session_state.get("feat_safety_cam", True):
+                stop_feed = True
+                break
+            try:
+                frame_rgb, payload = next(gen)
+            except StopIteration:
+                stop_feed = True
                 break
             if frame_rgb is not None:
                 # Dynamic caption so the image's visible/accessible text reflects
@@ -487,6 +520,7 @@ def _run_live_camera(cam_index: int, arm_real_calls: bool) -> None:
                 continue
             if "error" in payload:
                 info_box.warning(f"Camera: {payload['error']}")
+                stop_feed = True
                 break
 
             # Live scene summary (aria-live: announced to assistive tech).
@@ -522,34 +556,129 @@ def _run_live_camera(cam_index: int, arm_real_calls: bool) -> None:
                     triggered = True
                     break
     except Exception as exc:  # noqa: BLE001
+        # On any error, drop the cached generator so the camera is released and
+        # the next rerun reopens cleanly instead of reusing a dead handle.
         st.warning(f"Camera/vision error: {exc}")
-    finally:
-        # Always close the generator so its finally-block releases the camera.
-        try:
-            gen.close()
-        except Exception:  # noqa: BLE001
-            pass
+        _close_cam_gen()
+        return
 
     if triggered:
         st.success("Episode analyzed and saved. Resuming feed.")
-    # Re-trigger so the checkbox can stop the feed on the next rerun.
+
+    # Stop conditions (checkbox off / StopIteration / camera error): release the
+    # camera and do NOT rerun, so the feed actually stops. Otherwise keep the
+    # generator cached (no close) and rerun to read the next batch — this is what
+    # keeps the camera ON continuously with no on/off flicker.
+    if stop_feed:
+        _close_cam_gen()
+        return
     if st.session_state.get("feat_safety_cam", True):
         st.rerun()
+
+
+_SRC_PHONE = "Phone / browser camera"
+_SRC_LOCAL = "Local webcam / Continuity"
+
+
+def _render_phone_camera(arm_real_calls: bool) -> None:
+    """PHONE / browser camera path: st.camera_input -> analyze_image_bytes.
+
+    Lets the user's phone be the camera by opening the app on the phone's browser
+    (same Wi-Fi) and snapping a still — the photo runs through the SAME Perception
+    core as the live webcam, then feeds the hazard pipeline. Degrades gracefully if
+    CV deps / the perception module are unavailable (never crashes the tab)."""
+    try:
+        import perception
+    except ImportError:
+        st.warning("CV deps missing — run: pip install opencv-python ultralytics")
+        return
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"Perception import error: {exc}")
+        return
+
+    st.caption(
+        "To use your PHONE's camera, open this app on the phone's browser over the "
+        "same Wi-Fi via the Network URL — e.g. http://<your-mac-ip>:<port>."
+    )
+    photo = st.camera_input("Tap to use your phone's camera")
+    if photo is None:
+        st.info("No photo yet. Tap the shutter above to capture a frame to analyze.")
+        return
+
+    try:
+        rgb, payload = perception.analyze_image_bytes(photo.getvalue())
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"Could not analyze photo: {exc}")
+        return
+
+    if rgb is not None:
+        st.image(
+            rgb, channels="RGB", use_container_width=True,
+            caption="Captured frame — scene / detections / hazards summarized below.",
+        )
+
+    if not payload:
+        st.info("No people, objects, or hazards detected in this frame.")
+        return
+
+    # Scene summary as plain text (aria-live, never color-only).
+    st.markdown(
+        '<div role="status" aria-live="polite" '
+        'style="font-family:var(--font-mono);font-size:11px;letter-spacing:1px;'
+        'color:var(--hud-cyan)">'
+        f'SCENE {_esc(str(payload.get("scene", "?")).upper())} · '
+        f'CROWD {_esc(payload.get("crowd_count", 0))} · '
+        f'RISK {_esc(payload.get("risk_level", "LOW"))}</div>',
+        unsafe_allow_html=True,
+    )
+    items = _detection_chips(payload)
+    if items:
+        st.markdown(
+            '<div role="status" aria-live="polite" '
+            'aria-label="Detections and hazards">' + hud.chips(items) + '</div>',
+            unsafe_allow_html=True,
+        )
+
+    # Feed the hazard pipeline: auto on HIGH risk, else via an explicit button.
+    # Cooldown-guard the auto-run so a still photo persisting in session_state can't
+    # re-fire the pipeline (and possible live calls) on every rerun.
+    risk = payload.get("risk_level", "LOW")
+    if risk == "HIGH":
+        now = time.time()
+        if now - st.session_state.feat_safety_last_auto > _COOLDOWN:
+            st.session_state.feat_safety_last_auto = now
+            st.markdown(
+                '<div role="alert" aria-live="assertive" '
+                'style="font-family:var(--font-mono);font-size:11px;letter-spacing:1px;'
+                'color:var(--hud-danger)">HIGH RISK — running agent pipeline…</div>',
+                unsafe_allow_html=True,
+            )
+            _run_pipeline({"heart_rate": 85, "hrv": 45, **payload}, arm_real_calls)
+            st.success("Episode analyzed and saved from phone capture.")
+        else:
+            st.info("HIGH risk already handled — cooldown active. Recapture to re-run.")
+    elif st.button("Analyze hazard", use_container_width=True,
+                   key="feat_safety_phone_analyze",
+                   help="Run the full agent pipeline on this captured frame."):
+        _run_pipeline({"heart_rate": 85, "hrv": 45, **payload}, arm_real_calls)
+        st.success("Episode analyzed and saved from phone capture.")
 
 
 def _render_camera_column(arm_real_calls: bool) -> None:
     st.markdown(hud.hud_sep("PERCEPTION // CAMERA"), unsafe_allow_html=True)
 
-    cam_index = st.number_input(
-        "Camera index", min_value=0, max_value=8, value=1, step=1,
-        key="feat_safety_cam_index",
-        help="Which camera the YOLO feed reads (0 = default webcam).",
+    source = st.radio(
+        "Camera source",
+        (_SRC_PHONE, _SRC_LOCAL),
+        key="feat_safety_cam_source",
+        help="Phone: snap a frame from your phone's browser. "
+             "Local: live YOLO loop on a webcam / iPhone Continuity camera.",
     )
-    enable_cam = st.checkbox(
-        "Enable Live YOLO Camera", key="feat_safety_cam",
-        help="Runs local YOLOv8 on the selected camera. High CPU. "
-             "Requires opencv-python + ultralytics.",
-    )
+
+    # Switching away from the local feed must release the cached camera so it
+    # never lingers open (and so re-entering local reopens cleanly).
+    if source != _SRC_LOCAL:
+        _close_cam_gen()
 
     st.caption("Manual scenario triggers — drive the pipeline without a camera")
     b1, b2, b3 = st.columns(3)
@@ -563,13 +692,50 @@ def _render_camera_column(arm_real_calls: bool) -> None:
             _run_pipeline(_SCENARIOS[label], arm_real_calls)
             st.rerun()
 
+    if source == _SRC_PHONE:
+        _render_phone_camera(arm_real_calls)
+        return
+
+    # Local webcam / Continuity — live YOLO loop with the flicker fix.
+    cam_index = st.number_input(
+        "Camera index", min_value=0, max_value=8, value=1, step=1,
+        key="feat_safety_cam_index",
+        help="Which camera the YOLO feed reads (1 = iPhone Continuity, "
+             "0 = default webcam).",
+    )
+    st.caption("Run `python list_cams.py` to find your iPhone/Continuity camera index.")
+    enable_cam = st.checkbox(
+        "Enable Live YOLO Camera", key="feat_safety_cam",
+        help="Runs local YOLOv8 on the selected camera. High CPU. "
+             "Requires opencv-python + ultralytics.",
+    )
+
     if enable_cam:
         _run_live_camera(int(cam_index), arm_real_calls)
     else:
+        # Camera turned OFF: release the persistent generator (stops the flicker
+        # cycle and frees the device) then show the guidance copy.
+        _close_cam_gen()
         st.info(
             "Camera disabled. Use the manual scenario buttons above to drive the "
             "pipeline, or enable the live YOLO camera."
         )
+
+
+# ---------------------------------------------------------------------------
+# Public lifecycle hook — call when leaving the SAFETY tab.
+# ---------------------------------------------------------------------------
+def on_deactivate() -> None:
+    """Release the camera when the SAFETY tab is navigated away from.
+
+    feat_ui.py dispatches exactly one module's render() per run, so once another
+    tab is active feat_safety.render() (and its camera loop) never runs again and
+    the cached generator would leak the webcam open. The shell must call this from
+    its dispatcher whenever the previously-active tab was SAFETY and the new one
+    isn't. Also unchecks the live-feed toggle so the feed doesn't silently resume
+    on return. Idempotent and safe to call when no camera is open."""
+    _close_cam_gen()
+    st.session_state["feat_safety_cam"] = False
 
 
 # ---------------------------------------------------------------------------

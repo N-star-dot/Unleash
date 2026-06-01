@@ -95,6 +95,13 @@ def _render_chrome(active: str) -> None:
 
 
 def _dispatch(active: str) -> None:
+    # Release the SAFETY tab's webcam when navigating away — it keeps an OS camera
+    # handle open across reruns (for a flicker-free live feed), so free it here.
+    if active != "SAFETY" and hasattr(feat_safety, "on_deactivate"):
+        try:
+            feat_safety.on_deactivate()
+        except Exception:
+            pass
     module = _TABS.get(active)
     if module is None:  # unreachable via the radio, but never blank.
         st.error(f"Unknown tab: {active}")

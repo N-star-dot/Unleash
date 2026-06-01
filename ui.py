@@ -343,9 +343,24 @@ with tab_feed:
 
     with col_cam:
         st.markdown(hud.hud_sep("PERCEPTION // LIVE"), unsafe_allow_html=True)
-        cam_index = st.number_input("Camera index", min_value=0, max_value=8, value=1, step=1)
-        enable_cam = st.checkbox("Enable Live YOLO Camera", key="enable_cam",
-                                 help="Runs local YOLOv8. High CPU. Requires opencv + ultralytics.")
+
+        # Pick where frames come from. Phone = st.camera_input (works on a phone
+        # browser); Local = the on-device webcam / iPhone Continuity YOLO loop.
+        cam_source = st.radio(
+            "Camera source",
+            ["Phone / browser camera", "Local webcam / Continuity"],
+            help="Phone uses your device browser camera; Local runs YOLOv8 on this Mac.",
+        )
+
+        # If we just switched AWAY from the local source, release any cached camera
+        # generator so we never hold the webcam open while on the phone path.
+        if cam_source != "Local webcam / Continuity" and "cam_gen" in st.session_state:
+            try:
+                st.session_state.cam_gen.close()
+            except Exception:  # noqa: BLE001
+                pass
+            st.session_state.pop("cam_gen", None)
+            st.session_state.pop("cam_index_active", None)
 
         st.caption("Manual scenario triggers")
         b1, b2, b3 = st.columns(3)
@@ -368,35 +383,29 @@ with tab_feed:
             speak_line(st.session_state.voice_line)
             st.rerun()
 
-        if enable_cam:
-            try:
-                from perception import vision_generator
-
-                cam_box = st.empty()
-                info_box = st.empty()
-                chip_box = st.empty()
-                COOLDOWN = 15           # seconds between auto-pipeline runs
-                MAX_FRAMES_PER_RUN = 30  # bound the loop so Streamlit stays responsive
-
-                triggered = False
-                gen = vision_generator(camera_index=int(cam_index))
+        # ===== PHONE / BROWSER CAMERA ====================================
+        if cam_source == "Phone / browser camera":
+            st.caption(
+                "To use your PHONE's camera, open this app on the phone's browser "
+                "via the Network URL (same Wi-Fi), e.g. "
+                "http://<your-mac-ip>:<port> — then tap below."
+            )
+            photo = st.camera_input("Tap to use your phone's camera")
+            if photo is not None:
                 try:
-                    for i, (frame_rgb, payload) in enumerate(gen):
-                        # Stop conditions: frame budget reached or checkbox unticked.
-                        if i >= MAX_FRAMES_PER_RUN or not st.session_state.get("enable_cam", True):
-                            break
-                        if frame_rgb is not None:
-                            cam_box.image(
-                                frame_rgb, channels="RGB", use_container_width=True,
-                                caption="Live perception feed; detections listed below.",
-                            )
-                        if not payload:
-                            continue
-                        if "error" in payload:
-                            info_box.warning(f"Camera: {payload['error']}")
-                            break
+                    import perception
 
-                        info_box.markdown(
+                    rgb, payload = perception.analyze_image_bytes(photo.getvalue())
+                    if rgb is not None:
+                        st.image(
+                            rgb, channels="RGB", use_container_width=True,
+                            caption="Captured frame; detections listed below.",
+                        )
+                    else:
+                        st.warning("Could not decode that photo — try capturing again.")
+
+                    if payload and "error" not in payload:
+                        st.markdown(
                             '<div role="status" aria-live="polite" '
                             'style="font-family:var(--font-mono);font-size:11px;'
                             'letter-spacing:1px;color:var(--hud-cyan)">'
@@ -414,42 +423,197 @@ with tab_feed:
                             for h in payload.get("hazards", [])[:4]
                         ]
                         if items:
-                            chip_box.markdown(
+                            st.markdown(
                                 '<div role="status" aria-live="polite">'
                                 + hud.chips(items) + '</div>',
                                 unsafe_allow_html=True,
                             )
 
-                        if payload.get("risk_level") == "HIGH":
+                        # Feed the hazard pipeline: auto on HIGH risk, else on button.
+                        # Cooldown-guard the HIGH auto-run so the still photo persisting
+                        # in session_state can't re-fire the pipeline (and possible live
+                        # calls) on every rerun. The manual button is never gated.
+                        risk = payload.get("risk_level", "LOW")
+                        run_now = False
+                        if risk == "HIGH":
                             now = time.time()
-                            if now - st.session_state.last_auto_trigger > COOLDOWN:
+                            if now - st.session_state.last_auto_trigger > 15:
                                 st.session_state.last_auto_trigger = now
-                                info_box.markdown(
+                                run_now = True
+                                st.markdown(
                                     '<div role="alert" aria-live="assertive" '
                                     'style="font-family:var(--font-mono);font-size:11px;'
                                     'letter-spacing:1px;color:var(--hud-danger)">'
                                     'HIGH RISK — running agent pipeline…</div>',
                                     unsafe_allow_html=True,
                                 )
-                                run_pipeline({"heart_rate": 85, "hrv": 45, **payload}, arm_real_calls)
-                                speak_line(st.session_state.voice_line)
-                                triggered = True
-                                break
-                finally:
-                    # Always close the generator so its finally-block releases the camera.
-                    gen.close()
+                            else:
+                                st.info("HIGH risk already handled — cooldown active. Recapture to re-run.")
+                        else:
+                            run_now = st.button("Analyze hazard", use_container_width=True)
+                        if run_now:
+                            run_pipeline({"heart_rate": 85, "hrv": 45, **payload}, arm_real_calls)
+                            speak_line(st.session_state.voice_line)
+                            st.success("Photo analyzed and fed to the pipeline.")
+                    elif payload and "error" in payload:
+                        st.warning(f"Camera: {payload['error']}")
+                    else:
+                        st.info("No detections in that frame. Capture again to retry.")
+                except ImportError:
+                    st.warning("CV deps missing — run: pip install opencv-python ultralytics")
+                except Exception as exc:  # noqa: BLE001
+                    st.warning(f"Photo analysis error: {exc}")
 
-                if triggered:
-                    st.success("Episode analyzed and saved. Resuming feed.")
-                # Re-trigger so the checkbox can stop the feed and other tabs stay live.
-                if st.session_state.get("enable_cam", True):
-                    st.rerun()
-            except ImportError:
-                st.warning("CV deps missing — run: pip install opencv-python ultralytics")
-            except Exception as exc:  # noqa: BLE001
-                st.warning(f"Camera/vision error: {exc}")
+        # ===== LOCAL WEBCAM / CONTINUITY ================================
         else:
-            st.info("Camera disabled. Use the manual scenario buttons above to drive the pipeline.")
+            cam_index = st.number_input("Camera index", min_value=0, max_value=8, value=1, step=1)
+            st.caption("Run `python list_cams.py` to find your iPhone/Continuity camera index.")
+            enable_cam = st.checkbox(
+                "Enable Live YOLO Camera", key="enable_cam",
+                help="Runs local YOLOv8. High CPU. Requires opencv + ultralytics.")
+            # st.tabs renders EVERY tab body each rerun and cannot report which tab
+            # is visually active server-side, so the self-rerun streaming loop below
+            # would keep firing even when the operator is on another tab (pinning the
+            # app in a continuous high-CPU rerun cycle). Gate the loop on an explicit
+            # Streaming guard the operator toggles only while watching this tab.
+            streaming = st.checkbox(
+                "Streaming", key="cam_streaming",
+                help="Pull live frames + self-rerun. Turn OFF when viewing another tab "
+                     "to stop the rerun loop and idle the camera.")
+
+            # If the camera index changed since we cached a generator, drop the old
+            # one so we reopen on the new device (avoids reading the wrong camera).
+            if st.session_state.get("cam_index_active") != int(cam_index) and "cam_gen" in st.session_state:
+                try:
+                    st.session_state.cam_gen.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                st.session_state.pop("cam_gen", None)
+                st.session_state.pop("cam_index_active", None)
+
+            if enable_cam and streaming:
+                try:
+                    from perception import vision_generator
+
+                    cam_box = st.empty()
+                    info_box = st.empty()
+                    chip_box = st.empty()
+                    COOLDOWN = 15           # seconds between auto-pipeline runs
+                    MAX_FRAMES_PER_RUN = 30  # bounded batch keeps Streamlit responsive
+
+                    # FLICKER FIX: build the generator ONCE and reuse it across reruns.
+                    # The old code opened + released the camera every rerun, so the
+                    # camera light cycled on/off. Now we cache the generator in
+                    # session_state and only close it on OFF / source-switch / index
+                    # change / error — keeping the camera continuously ON.
+                    gen = st.session_state.get("cam_gen")
+                    if gen is None:
+                        gen = vision_generator(camera_index=int(cam_index))
+                        st.session_state.cam_gen = gen
+                        st.session_state.cam_index_active = int(cam_index)
+
+                    triggered = False
+                    stop = False
+                    try:
+                        for i in range(MAX_FRAMES_PER_RUN):
+                            if not st.session_state.get("enable_cam", True) \
+                                    or not st.session_state.get("cam_streaming", False):
+                                break
+                            frame_rgb, payload = next(gen)
+                            if frame_rgb is not None:
+                                cam_box.image(
+                                    frame_rgb, channels="RGB", use_container_width=True,
+                                    caption="Live perception feed; detections listed below.",
+                                )
+                            if not payload:
+                                continue
+                            if "error" in payload:
+                                info_box.warning(f"Camera: {payload['error']}")
+                                stop = True
+                                break
+
+                            info_box.markdown(
+                                '<div role="status" aria-live="polite" '
+                                'style="font-family:var(--font-mono);font-size:11px;'
+                                'letter-spacing:1px;color:var(--hud-cyan)">'
+                                f'SCENE {_esc(payload.get("scene","?")).upper()} · '
+                                f'CROWD {_esc(payload.get("crowd_count",0))} · '
+                                f'RISK {_esc(payload.get("risk_level","LOW"))}</div>',
+                                unsafe_allow_html=True,
+                            )
+                            items = [
+                                {"text": f'{d.get("label","obj").upper()} {d.get("side","")}',
+                                 "variant": "danger" if d.get("collision_risk", 0) > 0.6 else None}
+                                for d in payload.get("detections", [])[:6]
+                            ] + [
+                                {"text": f'HAZARD {h.get("label","hazard").upper()}', "variant": "warning"}
+                                for h in payload.get("hazards", [])[:4]
+                            ]
+                            if items:
+                                chip_box.markdown(
+                                    '<div role="status" aria-live="polite">'
+                                    + hud.chips(items) + '</div>',
+                                    unsafe_allow_html=True,
+                                )
+
+                            if payload.get("risk_level") == "HIGH":
+                                now = time.time()
+                                if now - st.session_state.last_auto_trigger > COOLDOWN:
+                                    st.session_state.last_auto_trigger = now
+                                    info_box.markdown(
+                                        '<div role="alert" aria-live="assertive" '
+                                        'style="font-family:var(--font-mono);font-size:11px;'
+                                        'letter-spacing:1px;color:var(--hud-danger)">'
+                                        'HIGH RISK — running agent pipeline…</div>',
+                                        unsafe_allow_html=True,
+                                    )
+                                    run_pipeline({"heart_rate": 85, "hrv": 45, **payload}, arm_real_calls)
+                                    speak_line(st.session_state.voice_line)
+                                    triggered = True
+                                    break
+                    except StopIteration:
+                        stop = True
+                    except Exception as exc:  # noqa: BLE001
+                        info_box.warning(f"Camera/vision error: {exc}")
+                        stop = True
+
+                    # Only release the camera on a real stop condition. A normal batch
+                    # finishing must NOT close the generator (that caused the flicker).
+                    if stop:
+                        try:
+                            gen.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        st.session_state.pop("cam_gen", None)
+                        st.session_state.pop("cam_index_active", None)
+
+                    if triggered:
+                        st.success("Episode analyzed and saved. Resuming feed.")
+                    # Keep streaming the next batch only while the camera is enabled AND
+                    # the Streaming guard is on — so the self-rerun loop stops firing when
+                    # the operator leaves this tab (st.tabs can't tell us server-side).
+                    if st.session_state.get("enable_cam", True) \
+                            and st.session_state.get("cam_streaming", False) and not stop:
+                        st.rerun()
+                except ImportError:
+                    st.warning("CV deps missing — run: pip install opencv-python ultralytics")
+                except Exception as exc:  # noqa: BLE001
+                    st.warning(f"Camera/vision error: {exc}")
+            else:
+                # Camera OFF or Streaming paused: release the cached generator so the
+                # webcam light actually goes out and the self-rerun loop stops (no
+                # lingering open capture across reruns).
+                if "cam_gen" in st.session_state:
+                    try:
+                        st.session_state.cam_gen.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    st.session_state.pop("cam_gen", None)
+                    st.session_state.pop("cam_index_active", None)
+                if enable_cam and not streaming:
+                    st.info("Streaming paused — camera idle. Check Streaming to resume the live feed.")
+                else:
+                    st.info("Camera disabled. Use the manual scenario buttons above to drive the pipeline.")
 
     with col_bus:
         st.markdown(hud.hud_sep("CONFLICT BUS // CLAIMS"), unsafe_allow_html=True)

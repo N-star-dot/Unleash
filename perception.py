@@ -242,6 +242,31 @@ class Perception:
         return ("LOW", "MED", "HIGH")[level]
 
 
+# Shared single-frame analyzer for the PHONE / browser camera (st.camera_input).
+_PHOTO_PERCEP = None
+
+
+def analyze_image_bytes(data):
+    """Decode a still image (e.g. st.camera_input bytes) -> (annotated_rgb, payload).
+
+    Lets the PHONE be the camera: open the app on the phone's browser, capture a
+    frame, and run the same Perception.analyze() used by the live webcam path —
+    so phone snapshots feed the brain with the identical JSON contract."""
+    global _PHOTO_PERCEP
+    if not data:
+        return None, None
+    try:
+        arr = np.frombuffer(data, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)   # -> BGR
+    except Exception:
+        return None, None
+    if frame is None:
+        return None, None
+    if _PHOTO_PERCEP is None:
+        _PHOTO_PERCEP = Perception()
+    return _PHOTO_PERCEP.analyze(frame)
+
+
 def vision_generator(camera_index=1):
     """Yield (frame_rgb, payload) per frame for Streamlit. (None, {'error'}) on failure."""
     percep = Perception()
