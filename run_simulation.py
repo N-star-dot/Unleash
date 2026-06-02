@@ -1,7 +1,7 @@
 import time
 from app import (
     process_biometrics, 
-    pattern_detector, 
+    predictive_forecaster, 
     memory_agent, 
     behavior_orchestrator, 
     retrospective_agent
@@ -24,8 +24,8 @@ def simulate_event(scenario_name: str, telemetry_payload: dict):
     bio_output = process_biometrics(telemetry_payload) # The code had process_biometrics(state["current_telemetry"])
     state["active_claims"] = bio_output.get("active_claims", [])
     
-    print("[2/4] Pattern Detector analyzing baseline variations...")
-    pattern_output = pattern_detector(state)
+    print("[2/4] Predictive Forecaster analyzing biometric trajectory...")
+    pattern_output = predictive_forecaster(state)
     state["active_predictions"] = pattern_output.get("active_predictions", [])
     
     print("[3/4] Memory Agent querying Mem0 episodic context...")
@@ -44,10 +44,42 @@ def simulate_event(scenario_name: str, telemetry_payload: dict):
     print("=== Scenario Concluded ===\n")
 
 if __name__ == "__main__":
-    # Test Scenario: Simulate an oncoming panic attack profile
-    panic_profile = {
-        "heart_rate": 115,
-        "hrv": 22,
-        "fall_detected": False
-    }
-    simulate_event("Panic Attack Onset (Elevated HR + Low HRV)", panic_profile)
+    import json
+    
+    print("Loading raw webhook dump for streaming simulation...")
+    try:
+        with open("raw_webhook_dump.json", "r") as f:
+            payload = json.load(f)
+            
+        metrics = payload.get("data", {}).get("metrics", [])
+        hr_data = []
+        for m in metrics:
+            if m.get("name") == "heart_rate":
+                hr_data = m.get("data", [])
+                break
+                
+        print(f"Found {len(hr_data)} heart rate data points. Streaming first 65 points to fill buffer...")
+        
+        for i, point in enumerate(hr_data[:65]):
+            hr = point.get("Max", 75)
+            # Apple Watch HRV is sparse, so we mock it based on HR
+            hrv = max(20, 100 - hr/2) 
+            
+            telemetry = {
+                "heart_rate": hr,
+                "hrv": hrv,
+                "fall_detected": False
+            }
+            
+            # Run silently to avoid console flood until the last few steps
+            if i >= 58:
+                simulate_event(f"Apple Watch Stream Step {i}", telemetry)
+            else:
+                # Update the buffer manually or just run the pipeline silently
+                from forecast_engine import update_buffer
+                update_buffer(hr, hrv)
+                if i % 10 == 0:
+                    print(f"Filled {i}/60 buffer slots...")
+                    
+    except Exception as e:
+        print(f"Error loading JSON: {e}")

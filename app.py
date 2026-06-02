@@ -20,6 +20,8 @@ import requests
 import requests
 import json
 from shaped import Client
+import torch
+from forecast_engine import update_buffer, forecasting_model, device
 
 # =====================================================================
 # 0. PERSONALIZED BASELINE INGESTION
@@ -249,11 +251,14 @@ def multimodal_fusion_agent(state: dict) -> dict:
         }
 
 @weave.op()
-def pattern_detector(state: ConflictBusState) -> dict:
-    """Agent 2: Analyzes anomalies against baseline configurations."""
+def predictive_forecaster(state: ConflictBusState) -> dict:
+    """Agent 2: Forecasts biometric trajectory to catch precursors early."""
     claims = state.get("active_claims", [])
     telemetry = state.get("current_telemetry", {})
-    predictions = []
+    predictions = state.get("active_predictions", [])
+    
+    hr = telemetry.get("heart_rate")
+    hrv = telemetry.get("hrv")
     
     # Calculate the user's personal average HR from the Apple Health export
     avg_hr = 75 # Fallback
@@ -262,30 +267,39 @@ def pattern_detector(state: ConflictBusState) -> dict:
         if recent_hr_values:
             avg_hr = sum(recent_hr_values) / len(recent_hr_values)
             
-    # Check if the current streaming telemetry from the Conflict Bus is dangerously above their specific baseline
-    current_hr = telemetry.get("heart_rate", avg_hr)
-    
     # Check for extreme physical emergencies
-    if telemetry.get("fall_detected", False) or current_hr > 160:
+    if telemetry.get("fall_detected", False) or (hr and hr > 160):
         predictions.append({
-            "source": "PatternDetector",
+            "source": "LSTM_Forecaster",
             "description": "SEVERE SEIZURE OR FALL DETECTED (Critical Emergency)",
             "confidence": 0.99,
             "timestamp": time.time()
         })
         
-    # Check for personalized panic attack precursor (30% spike above personal baseline)
-    if current_hr > (avg_hr * 1.3):
-        predictions.append({
-            "source": "PatternDetector",
-            "description": f"Panic Attack Precursor Detected. Current HR ({current_hr}) is 30% above user's Apple Health baseline ({avg_hr:.1f}).",
-            "confidence": 0.92,
-            "timestamp": time.time()
-        })
+    if hr and hrv:
+        # 1. Push new data into the sliding window
+        sequence_tensor = update_buffer(hr, hrv)
         
+        # 2. If we have enough data to form a sequence, run inference
+        if sequence_tensor is not None:
+            with torch.no_grad():
+                # Model predicts the scaled future HR
+                future_hr_scaled = forecasting_model(sequence_tensor)
+                predicted_future_hr = future_hr_scaled.item() * 200.0
+                
+            # 3. Check if the PREDICTED future HR violates the baseline
+            if predicted_future_hr > (avg_hr * 1.3):
+                print(f"⚠️ [Forecaster] Trajectory warns of spike! Predicted HR in 5 mins: {predicted_future_hr:.1f}")
+                predictions.append({
+                    "source": "LSTM_Forecaster",
+                    "description": f"Forecasted HR Spike. Model predicts HR will reach {predicted_future_hr:.1f} bpm.",
+                    "confidence": 0.88,
+                    "timestamp": time.time()
+                })
+                
     if any(c["type"] == "VisionAlert" for c in claims):
         predictions.append({
-            "source": "PatternDetector",
+            "source": "LSTM_Forecaster",
             "description": "Approaching Crowd Detected (High density objects ahead)",
             "confidence": 0.88,
             "timestamp": time.time()
@@ -293,7 +307,7 @@ def pattern_detector(state: ConflictBusState) -> dict:
         
     if any(c["type"] == "WeaponAlert" for c in claims):
         predictions.append({
-            "source": "PatternDetector",
+            "source": "LSTM_Forecaster",
             "description": "CRITICAL: Deadly Weapon Detected in Field of View!",
             "confidence": 0.99,
             "timestamp": time.time()
@@ -301,7 +315,7 @@ def pattern_detector(state: ConflictBusState) -> dict:
         
     if any(c["type"] == "HazardAlert" for c in claims):
         predictions.append({
-            "source": "PatternDetector",
+            "source": "LSTM_Forecaster",
             "description": "Environmental Hazard Detected (Stairs/Doors ahead)",
             "confidence": 0.90,
             "timestamp": time.time()
@@ -309,7 +323,7 @@ def pattern_detector(state: ConflictBusState) -> dict:
         
     if any(c["type"] == "InteractionAlert" for c in claims):
         predictions.append({
-            "source": "PatternDetector",
+            "source": "LSTM_Forecaster",
             "description": "User has maintained prolonged eye contact with the service dog for 5+ seconds. They may be seeking reassurance or attempting to initiate a grounding interaction.",
             "confidence": 0.95,
             "timestamp": time.time()

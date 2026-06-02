@@ -6,3 +6,7 @@ groq
 sentence-transformers
 python-dotenv
 shaped
+torch
+numpy
+fastapi
+uvicorn

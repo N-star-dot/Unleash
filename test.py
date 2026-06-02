@@ -4,7 +4,7 @@ from app import (
     process_biometrics, 
     process_vision_queue,
     multimodal_fusion_agent,
-    pattern_detector, 
+    predictive_forecaster, 
     memory_agent, 
     behavior_orchestrator, 
     action_dispatcher,
@@ -40,7 +40,7 @@ def test():
         fusion_output = multimodal_fusion_agent(state)
         state["environmental_embedding"] = fusion_output.get("environmental_embedding", [0.0]*1024)
         
-        pattern_output = pattern_detector(state)
+        pattern_output = predictive_forecaster(state)
         state["active_predictions"] = pattern_output.get("active_predictions", [])
         
         mem_output = memory_agent(state)

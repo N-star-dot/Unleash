@@ -161,26 +161,33 @@ st.write("---")
 st.header("Live Computer Vision Feed")
 st.markdown("Enable this to run the local YOLOv8 object detection model. The feed will automatically trigger the LangGraph pipeline if a high-risk collision or crowd density is detected.")
 
-if st.sidebar.checkbox("🔴 Enable Live YOLO Camera", help="Requires OpenCV and Ultralytics. High CPU usage."):
-    cam_index = st.sidebar.number_input("Camera Index (0=Mac, 1=iPhone)", min_value=0, max_value=5, value=0)
-    try:
-        from perception import vision_generator
-        st.subheader("Live YOLOv8 Inference")
-        
-        col_cam, col_status = st.columns([2, 1])
-        cam_placeholder = col_cam.empty()
-        status_placeholder = col_status.empty()
-        
-        last_trigger_time = 0
-        ANALYSIS_INTERVAL = 5  # Capture & analyze one frame for danger every 5 seconds
-        analysis_placeholder = col_cam.empty()
+if st.sidebar.checkbox("🔴 Connect to Perception Server", help="Requires perception_server.py running on port 8000"):
+    import requests
+    st.subheader("Live YOLOv8 Inference")
+    
+    col_cam, col_status = st.columns([2, 1])
+    
+    # We display the MJPEG stream directly using st.image with the URL
+    with col_cam:
+        st.markdown(
+            f'<img src="http://localhost:8000/stream" width="100%" style="border-radius:10px;" />',
+            unsafe_allow_html=True,
+        )
 
-        for frame_rgb, payload in vision_generator(camera_index=cam_index):
-            if frame_rgb is not None:
-                # Use use_container_width to fix deprecation warning
-                cam_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
+    status_placeholder = col_status.empty()
+    
+    last_trigger_time = 0
+    ANALYSIS_INTERVAL = 5  # Capture & analyze one frame for danger every 5 seconds
+    analysis_placeholder = col_cam.empty()
 
-            if payload:
+    # Create an empty placeholder to run the logic loop indefinitely
+    loop_placeholder = st.empty()
+    while True:
+        try:
+            response = requests.get("http://localhost:8000/payload", timeout=2)
+            payload = response.json()
+            
+            if payload and payload.get("status") != "initializing":
                 if "error" in payload:
                     st.error(payload["error"])
                     break
@@ -200,16 +207,13 @@ if st.sidebar.checkbox("🔴 Enable Live YOLO Camera", help="Requires OpenCV and
                 current_time = time.time()
                 time_to_next = int(ANALYSIS_INTERVAL - (current_time - last_trigger_time))
                 status_placeholder.info(
-                    f"**Scene**: {payload['scene']}\n\n"
-                    f"**Crowd Count**: {payload['crowd_count']}\n\n"
-                    f"**Risk Level**: {payload['risk_level']}\n\n"
+                    f"**Scene**: {payload.get('scene', 'unknown')}\n\n"
+                    f"**Crowd Count**: {payload.get('crowd_count', 0)}\n\n"
+                    f"**Risk Level**: {payload.get('risk_level', 'LOW')}\n\n"
                     f"**Live HR**: {live_hr_display}\n\n"
                     f"**Next scan in**: {max(time_to_next, 0)}s"
                 )
 
-                # Capture & analyze the current frame every ANALYSIS_INTERVAL seconds,
-                # regardless of risk level. The pipeline acts on whatever danger it finds
-                # (and falls back to passive/safe mode when the scene is clear).
                 if current_time - last_trigger_time >= ANALYSIS_INTERVAL:
                     with analysis_placeholder.container():
                         st.caption(f"🔎 Frame captured at {time.strftime('%H:%M:%S')} — analyzing for danger...")
@@ -245,6 +249,8 @@ if st.sidebar.checkbox("🔴 Enable Live YOLO Camera", help="Requires OpenCV and
                         execute_scenario("Live 5s Vision & Health Scan", full_payload)
 
                     last_trigger_time = time.time()
-
-    except ImportError:
-        st.error("Missing CV dependencies. Please run: pip install opencv-python ultralytics")
+                    
+        except requests.exceptions.RequestException:
+            status_placeholder.warning("Cannot connect to perception_server.py. Is it running on port 8000?")
+            
+        time.sleep(0.5) # Prevent Streamlit from completely locking up
