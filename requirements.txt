@@ -4,3 +4,5 @@ easyocr>=1.7.0
 mediapipe>=0.10.0
 groq
 sentence-transformers
+python-dotenv
+shaped

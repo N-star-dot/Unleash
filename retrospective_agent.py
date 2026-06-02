@@ -2,9 +2,9 @@ import os
 import weave
 import time
 from conflict_bus import ConflictBusState
-from shaped import ShapedClient
+from shaped import Client
 
-shaped_client = ShapedClient(api_key=os.environ.get("SHAPED_API_KEY"))
+shaped_client = Client(api_key=os.environ.get("SHAPED_API_KEY"))
 
 @weave.op()
 def retrospective_agent(state: ConflictBusState, resolution_success: bool = True) -> dict:
@@ -22,7 +22,7 @@ def retrospective_agent(state: ConflictBusState, resolution_success: bool = True
     # Push the structured memory to Shaped
     if final_action != "Maintain passive observation.":
         try:
-            shaped_client.tables.insert(
+            shaped_client.insert_table_rows(
                 table_name="Unleash_Data",
                 rows=[
                     {
@@ -30,7 +30,7 @@ def retrospective_agent(state: ConflictBusState, resolution_success: bool = True
                         "precursor_state": predictions[-1].get('description', ''),
                         "intervention_chosen": final_action,
                         "quality_score": quality_score,
-                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                        "timestamp": int(time.time())
                     }
                 ]
             )

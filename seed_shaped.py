@@ -1,7 +1,7 @@
 import os
 import time
 from dotenv import load_dotenv
-from shaped import ShapedClient
+from shaped import Client
 
 load_dotenv()
 
@@ -10,7 +10,7 @@ if not SHAPED_API_KEY:
     print("SHAPED_API_KEY is not set.")
     exit(1)
 
-shaped_client = ShapedClient(api_key=SHAPED_API_KEY)
+shaped_client = Client(api_key=SHAPED_API_KEY)
 
 print("Seeding Shaped AI database with historical episodes...")
 
@@ -40,21 +40,20 @@ records = []
 for i, ep in enumerate(episodes):
     quality_score = 95 if ep["success"] else 20
     
-    # Calculate a past timestamp in ISO format
-    timestamp_seconds = time.time() - (len(episodes) - i) * 3600
-    timestamp_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(timestamp_seconds))
-    
+    # Calculate a past timestamp as a Unix epoch (the table's timestamp column is Int64)
+    timestamp_seconds = int(time.time() - (len(episodes) - i) * 3600)
+
     records.append({
-        "episode_id": f"seed_ep_{int(time.time())}_{i}",
+        "item_id": f"seed_ep_{int(time.time())}_{i}",
         "precursor_state": ep["precursor"],
         "intervention_chosen": ep["intervention"],
         "quality_score": quality_score,
-        "timestamp": timestamp_iso
+        "timestamp": timestamp_seconds
     })
 
 try:
-    shaped_client.tables.insert(
-        table_name="Unleash_Data",
+    shaped_client.insert_table_rows(
+        table_name="Unleash_Data_V3",
         rows=records
     )
     print("Seed process completed successfully!")

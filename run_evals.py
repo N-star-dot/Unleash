@@ -1,63 +1,59 @@
-import weave
-import asyncio
-import json
 import os
-from app import behavior_orchestrator, ConflictBusState
+import asyncio
+from dotenv import load_dotenv
+load_dotenv()
 
-# Initialize Weights & Biases tracing for the evaluation project
+import weave
+import json
+from app import orchestrator_model
+
+# Initialize Weave tracking for the same project
 weave.init("nghiatr38-boston-university/project-unleash-service-dog")
 
+# =====================================================================
+# 1. SCORING METRICS
+# =====================================================================
 @weave.op()
-def evaluate_orchestrator(predictions: list, memories: list) -> str:
-    """
-    Wrapper that shapes the dataset inputs into the expected LangGraph state format.
-    """
-    state = {
-        "current_telemetry": {},
-        "active_claims": [],
-        "active_predictions": predictions,
-        "retrieved_memories": memories,
-        "final_action": ""
+def exact_match(expected: str, model_output: str) -> dict:
+    """Checks if the LLM output matches the exact required safety protocol."""
+    return {"match": expected.strip().lower() == model_output.strip().lower()}
+
+# =====================================================================
+# 2. EVALUATION DATASET
+# =====================================================================
+test_dataset = [
+    {
+        # Scenario: User collapses.
+        "predictions": json.dumps([{"description": "SEVERE SEIZURE OR FALL DETECTED (Critical Emergency)"}]),
+        "memories": "[]",
+        "expected": "Call emergency services immediately"
+    },
+    {
+        # Scenario: Elevated HR indicating panic, and past memories show AirPods worked best.
+        "predictions": json.dumps([{"description": "Panic Attack Precursor Detected. Current HR is elevated."}]),
+        "memories": json.dumps(["Play grounding countdown audio through AirPods"]),
+        "expected": "Play grounding countdown audio through AirPods" 
+    },
+    {
+        # Scenario: Dense crowd, but no physical danger or elevated HR.
+        "predictions": json.dumps([{"description": "Approaching Crowd Detected (High density objects ahead)"}]),
+        "memories": "[]",
+        "expected": "Maintain passive navigation mode (Safe)"
     }
-    
-    # Run the actual orchestrator logic
-    result = behavior_orchestrator(state)
-    return result["final_action"]
+]
 
-@weave.op()
-def action_match_scorer(expected_action: str, output: str) -> dict:
-    """
-    Scorer that checks if Groq's generated output contains the expected directive.
-    """
-    # Use substring matching to account for minor LLM formatting variations
-    is_match = expected_action.lower().strip() in output.lower().strip()
-    return {"is_correct": is_match}
-
-async def run_evaluation():
-    print("📦 Loading evaluation dataset...")
-    with open("eval_dataset.json", "r") as f:
-        dataset = json.load(f)
-        
-    print(f"🎯 Loaded {len(dataset)} critical emergency scenarios.")
+# =====================================================================
+# 3. EXECUTION
+# =====================================================================
+def main():
+    print("Running Automated Safety Evaluations...")
     
-    # Define the Evaluation pipeline
-    evaluation = weave.Evaluation(
-        dataset=dataset,
-        scorers=[action_match_scorer]
-    )
+    # Weave automatically runs the orchestrator_model.predict() against every item 
+    # in the dataset, and then passes the output into the exact_match scorer.
+    evaluation = weave.Evaluation(dataset=test_dataset, scorers=[exact_match])
+    results = asyncio.run(evaluation.evaluate(orchestrator_model))
     
-    print("🚀 Firing scenarios against Groq Llama 3.3 (this will take a few seconds)...")
-    # Run the evaluation loop asynchronously
-    results = await evaluation.evaluate(evaluate_orchestrator)
-    
-    print("\n✅ Evaluation Pipeline Complete!")
-    print("📊 Check your Weights & Biases Dashboard to view the live scorecard!")
+    print("\n✅ Evaluation Complete! View the full matrix on Weights & Biases.")
 
 if __name__ == "__main__":
-    # Ensure GROQ API Key is set before running
-    if not os.environ.get("GROQ_API_KEY"):
-        print("ERROR: GROQ_API_KEY environment variable is missing.")
-        print("Please export it in your terminal before running evaluations.")
-        exit(1)
-        
-    asyncio.run(run_evaluation())
+    main()

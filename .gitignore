@@ -8,3 +8,4 @@ untitled folder/
 export.xml
 *.db
 .env
+.checkpoints/
