@@ -1,34 +1,42 @@
-from mem0 import Memory
-from conflict_bus import ConflictBusState
+import os
 import weave
+import time
+from conflict_bus import ConflictBusState
+from shaped import ShapedClient
 
-m = Memory()
+shaped_client = ShapedClient(api_key=os.environ.get("SHAPED_API_KEY"))
 
 @weave.op()
-def retrospective_agent(state: ConflictBusState) -> dict:
+def retrospective_agent(state: ConflictBusState, resolution_success: bool = True) -> dict:
+    """Agent 5: Saves structured outcomes to Shaped AI for future ranking."""
     final_action = state.get("final_action")
-    telemetry = state.get("current_telemetry", {})
     predictions = state.get("active_predictions", [])
     
-    if not final_action:
+    if not final_action or not predictions:
         return {}
-
-    # Format the outcome of the episode to store in Mem0
-    episode_summary = (
-        f"Episode Outcome: Action '{final_action}' was taken. "
-        f"Telemetry at the time: {telemetry}. "
-    )
-    if predictions:
-        episode_summary += f"Crisis predicted: {predictions[-1].get('description')}. "
         
+    # Calculate a mock quality score based on the outcome
+    # In a real scenario, this would be derived from post-intervention HR stabilization
+    quality_score = 95 if resolution_success else 20
+    
+    # Push the structured memory to Shaped
     if final_action != "Maintain passive observation.":
-        # We only record significant interventions or episodes
-        messages = [
-            {"role": "system", "content": "You are recording an intervention episode."},
-            {"role": "user", "content": episode_summary}
-        ]
-        
-        # Push back into the database ensuring the system learns for the next iteration
-        m.add(messages, user_id="service_dog_user_1")
+        try:
+            shaped_client.tables.insert(
+                table_name="Unleash_Data",
+                rows=[
+                    {
+                        "episode_id": f"ep_{int(time.time())}",
+                        "precursor_state": predictions[-1].get('description', ''),
+                        "intervention_chosen": final_action,
+                        "quality_score": quality_score,
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    }
+                ]
+            )
+            print(f"[Retrospective Agent] Episode logged to Shaped. Quality: {quality_score}")
+        except Exception as e:
+            print(f"[Retrospective Agent] Error logging to Shaped: {e}")
         
     return {}
+

@@ -1,0 +1,8 @@
+name: Unleash_Data
+schema_type: CUSTOM
+column_schema:
+  episode_id: String
+  precursor_state: String
+  intervention_chosen: String
+  quality_score: Float
+  timestamp: DateTime

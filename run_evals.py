@@ -5,7 +5,7 @@ import os
 from app import behavior_orchestrator, ConflictBusState
 
 # Initialize Weights & Biases tracing for the evaluation project
-weave.init("nghiatr38-boston-university/project-argus-service-dog")
+weave.init("nghiatr38-boston-university/project-unleash-service-dog")
 
 @weave.op()
 def evaluate_orchestrator(predictions: list, memories: list) -> str:

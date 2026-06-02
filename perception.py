@@ -197,112 +197,128 @@ def vision_generator(camera_index=1):
     struct_cache: list = []
     weapon_cache: list = []
 
-    while True:
-        ret, frame = cap.read()
-        print(f"DEBUG: cap.read() returned ret={ret}", file=sys.stderr)
-        if not ret:
-            time.sleep(0.02)
-            continue
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                time.sleep(0.02)
+                continue
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # ── YOLOv8n every frame ───────────────────────────────────────────────
-        detections  = []
-        seen: set   = set()
-        total_ppl   = 0
+            # ── YOLOv8n every frame ───────────────────────────────────────────────
+            detections  = []
+            seen: set   = set()
+            total_ppl   = 0
 
-        for box in nav_model(frame, verbose=False)[0].boxes:
-            label = nav_model.names[int(box.cls[0])]
-            conf  = float(box.conf[0])
-            if label not in NAV_CLASSES or conf < CONF_NAV: continue
-            
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            vel, risk = tracker.update(label, x1, y1, x2, y2, W, H)
-            cx   = (x1+x2)/2
-            prox = "close" if (x2-x1)/W > 0.30 else "far"
-            s    = side_of(cx, W)
+            for box in nav_model(frame, verbose=False)[0].boxes:
+                label = nav_model.names[int(box.cls[0])]
+                conf  = float(box.conf[0])
+                if label not in NAV_CLASSES or conf < CONF_NAV: continue
+                
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                vel, risk = tracker.update(label, x1, y1, x2, y2, W, H)
+                cx   = (x1+x2)/2
+                prox = "close" if (x2-x1)/W > 0.30 else "far"
+                s    = side_of(cx, W)
 
-            if label == "person":
-                total_ppl += 1
-                facing = face_in_box(gray, x1, y1, x2, y2)
-                if not person_is_relevant(vel, prox, facing):
-                    seen.add(label)
-                    continue   # skip — not approaching or not facing camera
-                interacting = bool(facing) and vel not in ("crossing-L", "crossing-R", "receding")
-                detections.append({
-                    "label":          "person",
-                    "confidence":     round(conf, 2),
-                    "side":           s,
-                    "proximity":      prox,
-                    "velocity":       vel,
-                    "collision_risk": risk,
-                    "facing_camera":  bool(facing),
-                    "interacting":    interacting,
-                })
-            else:
-                detections.append({
-                    "label":          label,
-                    "confidence":     round(conf, 2),
-                    "side":           s,
-                    "proximity":      prox,
-                    "velocity":       vel,
-                    "collision_risk": risk,
-                })
-            seen.add(label)
+                # Draw visual bounding box (Green for navigation)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(frame, f"{label} {conf:.2f}", (x1, max(y1-10, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-        # ── Specialist models every 3 frames ──────────────────────────────────
-        if frame_n % 3 == 0:
-            struct_cache = []
-            for model, threshold in filter(lambda x: x[0], [
-                (stairs_model, CONF_STAIRS),
-                (doors_model,  CONF_DOORS),
-            ]):
-                for box in model(frame, verbose=False)[0].boxes:
-                    label = model.names[int(box.cls[0])]
-                    conf  = float(box.conf[0])
-                    if conf < threshold: continue
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    struct_cache.append({
-                        "label":      "door" if "door" in label else label,
-                        "confidence": round(conf, 2),
-                        "side":       side_of((x1+x2)/2, W),
+                if label == "person":
+                    total_ppl += 1
+                    facing = face_in_box(gray, x1, y1, x2, y2)
+                    if not person_is_relevant(vel, prox, facing):
+                        seen.add(label)
+                        continue   # skip — not approaching or not facing camera
+                    interacting = bool(facing) and vel not in ("crossing-L", "crossing-R", "receding")
+                    detections.append({
+                        "label":          "person",
+                        "confidence":     round(conf, 2),
+                        "side":           s,
+                        "proximity":      prox,
+                        "velocity":       vel,
+                        "collision_risk": risk,
+                        "facing_camera":  bool(facing),
+                        "interacting":    interacting,
                     })
-
-            weapon_cache = []
-            if weapon_model:
-                for box in weapon_model(frame, verbose=False)[0].boxes:
-                    label = weapon_model.names[int(box.cls[0])]
-                    conf  = float(box.conf[0])
-                    if conf < CONF_WEAPON: continue
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    weapon_cache.append({
-                        "label":      label,
-                        "confidence": round(conf, 2),
-                        "side":       side_of((x1+x2)/2, W),
+                else:
+                    detections.append({
+                        "label":          label,
+                        "confidence":     round(conf, 2),
+                        "side":           s,
+                        "proximity":      prox,
+                        "velocity":       vel,
+                        "collision_risk": risk,
                     })
+                seen.add(label)
 
-        # ── OCR every 20 frames ───────────────────────────────────────────────
-        if frame_n % 20 == 0:
-            ocr_worker.submit(frame)
+            # ── Specialist models every 3 frames ──────────────────────────────────
+            if frame_n % 3 == 0:
+                struct_cache = []
+                for model, threshold in filter(lambda x: x[0], [
+                    (stairs_model, CONF_STAIRS),
+                    (doors_model,  CONF_DOORS),
+                ]):
+                    for box in model(frame, verbose=False)[0].boxes:
+                        label = model.names[int(box.cls[0])]
+                        conf  = float(box.conf[0])
+                        if conf < threshold: continue
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        
+                        # Draw visual bounding box (Orange for hazards)
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 165, 255), 2)
+                        cv2.putText(frame, f"{label} {conf:.2f}", (x1, max(y1-10, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)
+                        
+                        struct_cache.append({
+                            "label":      "door" if "door" in label else label,
+                            "confidence": round(conf, 2),
+                            "side":       side_of((x1+x2)/2, W),
+                        })
 
-        # ── Emit JSON and Frame ───────────────────────────────────────────────
-        payload = None
-        if detections or struct_cache or weapon_cache:
-            payload = {
-                "timestamp":    int(time.time() * 1000),
-                "scene":        classify_scene(seen),
-                "ambient_light": ambient_level(frame),
-                "crowd_count":  total_ppl,
-                # Calculate max risk dynamically for the Conflict Bus
-                "risk_level":   "HIGH" if weapon_cache or struct_cache else ("MED" if len(detections) > 3 else "LOW"),
-                "detections":   detections,
-                "hazards":      struct_cache,
-                "threats":      weapon_cache,
-                "text_detected": ocr_worker.get(),
-            }
+                weapon_cache = []
+                if weapon_model:
+                    for box in weapon_model(frame, verbose=False)[0].boxes:
+                        label = weapon_model.names[int(box.cls[0])]
+                        conf  = float(box.conf[0])
+                        if conf < CONF_WEAPON: continue
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        
+                        # Draw visual bounding box (Red for weapons)
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                        cv2.putText(frame, f"{label} {conf:.2f}", (x1, max(y1-10, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                        
+                        weapon_cache.append({
+                            "label":      label,
+                            "confidence": round(conf, 2),
+                            "side":       side_of((x1+x2)/2, W),
+                        })
 
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        yield frame_rgb, payload
-        frame_n += 1
+            # ── OCR every 20 frames ───────────────────────────────────────────────
+            if frame_n % 20 == 0:
+                ocr_worker.submit(frame)
 
-    cap.release()
+            # ── Emit JSON and Frame ───────────────────────────────────────────────
+            payload = None
+            if detections or struct_cache or weapon_cache:
+                payload = {
+                    "timestamp":    int(time.time() * 1000),
+                    "scene":        classify_scene(seen),
+                    "ambient_light": ambient_level(frame),
+                    "crowd_count":  total_ppl,
+                    # Calculate max risk dynamically for the Conflict Bus
+                    "risk_level":   "HIGH" if weapon_cache or struct_cache else ("MED" if len(detections) > 3 else "LOW"),
+                    "detections":   detections,
+                    "hazards":      struct_cache,
+                    "threats":      weapon_cache,
+                    "text_detected": ocr_worker.get(),
+                }
+
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            yield frame_rgb, payload
+            frame_n += 1
+
+    finally:
+        cap.release()
+        print(f"Camera {camera_index} released cleanly.", file=sys.stderr)

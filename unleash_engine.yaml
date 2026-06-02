@@ -1,0 +1,10 @@
+name: unleash_memory_engine
+data:
+  item_table:
+    name: Unleash_Data
+    type: table
+training:
+  models:
+    - name: precursor_embedding
+      policy_type: text_embedding
+      text_columns: [precursor_state]

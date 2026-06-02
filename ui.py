@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
 os.environ["MEM0_ENABLE_TELEMETRY"] = "False"
 os.environ["MEM0_TELEMETRY"] = "False"
 
@@ -16,10 +19,10 @@ from app import (
     retrospective_agent
 )
 
-st.set_page_config(page_title="ARGUS Control Panel", page_icon="🐕", layout="wide")
+st.set_page_config(page_title="Unleash Control Panel", page_icon="🐕", layout="wide")
 
-st.title("🐕 Project ARGUS: Control Panel")
-st.markdown("Simulate telemetry and environmental triggers to test the ARGUS multi-agent pipeline.")
+st.title("🐕 Project Unleash: Control Panel")
+st.markdown("Simulate telemetry and environmental triggers to test the Unleash multi-agent pipeline.")
 
 # Sidebar for configuration status
 with st.sidebar:
@@ -48,39 +51,40 @@ def execute_scenario(scenario_name: str, telemetry: dict):
     }
     
     with st.status("Executing Multi-Agent Pipeline...", expanded=True) as status:
-        st.write("📡 **[1/4]** Evaluating raw telemetry streams...")
-        bio_output = process_biometrics(telemetry)
-        vision_output = process_vision_queue(telemetry)
-        
-        # Merge claims from both ingest agents
-        claims = bio_output.get("active_claims", []) + vision_output.get("active_claims", [])
-        state["active_claims"] = claims
-        time.sleep(0.5)
-        
-        st.write("🔍 **[2/4]** Pattern Detector analyzing baseline variations...")
-        pattern_output = pattern_detector(state)
-        state["active_predictions"] = pattern_output.get("active_predictions", [])
-        
-        # Explicitly display the predictions on the UI so judges can read the baseline math!
-        for pred in state["active_predictions"]:
-            st.info(f"**Pattern Detected:** {pred['description']}")
+        try:
+            st.write("📡 **[1/4]** Evaluating raw telemetry streams...")
+            bio_output = process_biometrics(telemetry)
+            vision_output = process_vision_queue(telemetry)
             
-        time.sleep(0.5)
-        
-        st.write("🧠 **[3/4]** Memory Agent querying Mem0 episodic context...")
-        mem_output = memory_agent(state)
-        state["retrieved_memories"] = mem_output.get("retrieved_memories", [])
-        time.sleep(0.5)
-        
-        st.write("⚖️ **[4/5]** Behavior Orchestrator resolving action paths...")
-        orch_output = behavior_orchestrator(state)
-        state["final_action"] = orch_output.get("final_action", "Maintain passive navigation mode (Safe)")
-        time.sleep(0.5)
-        
-        st.write("⚡ **[5/5]** Action Dispatcher routing hardware APIs...")
-        dispatch_output = action_dispatcher(state)
-        
-        status.update(label="Pipeline Execution Complete!", state="complete", expanded=False)
+            # Merge claims from both ingest agents
+            claims = bio_output.get("active_claims", []) + vision_output.get("active_claims", [])
+            state["active_claims"] = claims
+            
+            st.write("🔍 **[2/4]** Pattern Detector analyzing baseline variations...")
+            pattern_output = pattern_detector(state)
+            state["active_predictions"] = pattern_output.get("active_predictions", [])
+            
+            # Explicitly display the predictions on the UI so judges can read the baseline math!
+            for pred in state["active_predictions"]:
+                st.info(f"**Pattern Detected:** {pred['description']}")
+                
+            st.write("🧠 **[3/4]** Memory Agent querying Mem0 episodic context...")
+            mem_output = memory_agent(state)
+            state["retrieved_memories"] = mem_output.get("retrieved_memories", [])
+            
+            st.write("⚖️ **[4/5]** Behavior Orchestrator resolving action paths...")
+            orch_output = behavior_orchestrator(state)
+            state["final_action"] = orch_output.get("final_action", "Maintain passive navigation mode (Safe)")
+            
+            st.write("⚡ **[5/5]** Action Dispatcher routing hardware APIs...")
+            dispatch_output = action_dispatcher(state)
+            
+            status.update(label="Pipeline Execution Complete!", state="complete", expanded=False)
+        except Exception as e:
+            st.error(f"Pipeline execution failed: {str(e)}")
+            state["final_action"] = "Error executing action"
+            dispatch_output = {"execution_status": "Failed to dispatch action"}
+            status.update(label="Pipeline Execution Failed", state="error", expanded=False)
     
     # Display the final execution
     st.success(f"### Final Executed Directive:\n**{state['final_action']}**")
@@ -160,12 +164,12 @@ if st.sidebar.checkbox("🔴 Enable Live YOLO Camera", help="Requires OpenCV and
         status_placeholder = col_status.empty()
         
         last_trigger_time = 0
-        COOLDOWN_SECONDS = 15  # 15 seconds is optimal for a hackathon demo
+        COOLDOWN_SECONDS = 2  # Reduced to 2 seconds for smooth rapid analysis
         
         for frame_rgb, payload in vision_generator(camera_index=cam_index):
             if frame_rgb is not None:
-                # Use use_column_width instead of use_container_width to silence the terminal warning spam
-                cam_placeholder.image(frame_rgb, channels="RGB", use_column_width=True)
+                # Use use_container_width to fix deprecation warning
+                cam_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
                 
             if payload:
                 if "error" in payload:
@@ -177,8 +181,10 @@ if st.sidebar.checkbox("🔴 Enable Live YOLO Camera", help="Requires OpenCV and
                     try:
                         with open("live_biometrics.json", "r") as f:
                             live_bio = json.load(f)
-                            if time.time() - live_bio["timestamp"] < 60:
-                                live_hr_display = f"❤️ {live_bio['heart_rate']} BPM"
+                            if time.time() - live_bio.get("timestamp", 0) < 60:
+                                hr = live_bio.get("heart_rate")
+                                if hr is not None:
+                                    live_hr_display = f"❤️ {hr} BPM"
                     except Exception:
                         pass
                         
@@ -193,48 +199,42 @@ if st.sidebar.checkbox("🔴 Enable Live YOLO Camera", help="Requires OpenCV and
                 if payload['risk_level'] == 'HIGH':
                     current_time = time.time()
                     if current_time - last_trigger_time > COOLDOWN_SECONDS:
-                        st.warning("⚠️ High Risk Detected! Pausing feed for Agent Analysis...")
-                        
-                        # Merge CV payload with base biological metrics
-                        if payload:
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.metric("Crowd Density", payload.get("crowd_count", 0))
-                            with col2:
-                                st.metric("Lighting", payload.get("ambient_light", "ok").upper())
+                        with status_placeholder.container():
+                            st.warning("⚠️ High Risk Detected! Running Agent Analysis...")
                             
-                            st.write(f"**Scene:** {payload.get('scene', 'unknown')}")
-                            st.write(f"**Risk Level:** {payload.get('risk_level', 'LOW')}")
+                            # Merge CV payload with base biological metrics
+                            if payload:
+                                st.write(f"**Scene:** {payload.get('scene', 'unknown')} | **Risk:** {payload.get('risk_level', 'LOW')}")
+                                
+                                if payload.get("threats"):
+                                    st.error(f"⚠️ **THREATS:** {', '.join([t['label'] for t in payload['threats']])}")
+                                if payload.get("hazards"):
+                                    st.warning(f"🚧 **HAZARDS:** {', '.join([h['label'] for h in payload['hazards']])}")
+                                if payload.get("text_detected"):
+                                    st.info(f"📄 **OCR TEXT:** {', '.join(payload['text_detected'])}")
+
+                            # Attempt to load the live Apple HealthKit stream data
+                            live_hr = 85 # fallback
+                            try:
+                                if os.path.exists("live_biometrics.json"):
+                                    with open("live_biometrics.json", "r") as f:
+                                        live_bio = json.load(f)
+                                        # Only use data if it's fresh (less than 60 seconds old)
+                                        if time.time() - live_bio.get("timestamp", 0) < 60:
+                                            if "heart_rate" in live_bio:
+                                                live_hr = live_bio["heart_rate"]
+                                                st.success(f"❤️ Live Apple Health Sync: {live_hr} BPM")
+                            except Exception:
+                                pass
+
+                            full_payload = {
+                                "heart_rate": live_hr,
+                                "hrv": 45,
+                                **payload
+                            }
+                            execute_scenario("Live Vision & Health Hazard Detected", full_payload)
                             
-                            if payload.get("threats"):
-                                st.error(f"⚠️ **THREATS:** {', '.join([t['label'] for t in payload['threats']])}")
-                            if payload.get("hazards"):
-                                st.warning(f"🚧 **HAZARDS:** {', '.join([h['label'] for h in payload['hazards']])}")
-                            if payload.get("text_detected"):
-                                st.info(f"📄 **OCR TEXT:** {', '.join(payload['text_detected'])}")
-
-                        # Attempt to load the live Apple HealthKit stream data
-                        live_hr = 85 # fallback
-                        try:
-                            if os.path.exists("live_biometrics.json"):
-                                with open("live_biometrics.json", "r") as f:
-                                    live_bio = json.load(f)
-                                    # Only use data if it's fresh (less than 60 seconds old)
-                                    if time.time() - live_bio["timestamp"] < 60:
-                                        live_hr = live_bio["heart_rate"]
-                                        st.success(f"❤️ Live Apple Health Sync: {live_hr} BPM")
-                        except Exception:
-                            pass
-
-                        full_payload = {
-                            "heart_rate": live_hr,
-                            "hrv": 45,
-                            **payload
-                        }
-                        execute_scenario("Live Vision & Health Hazard Detected", full_payload)
-                        
                         last_trigger_time = time.time()
-                        st.success(f"✅ Analysis saved to Mem0! Resuming camera feed (Cooldown: {COOLDOWN_SECONDS}s)")
                     else:
                         time_left = int(COOLDOWN_SECONDS - (current_time - last_trigger_time))
                         status_placeholder.warning(f"Hazard tracked. Pipeline in cooldown for {time_left}s...")

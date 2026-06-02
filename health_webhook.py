@@ -12,8 +12,16 @@ LIVE_DATA_FILE = "live_biometrics.json"
 @app.route('/health-webhook', methods=['POST'])
 def health_webhook():
     """Receives JSON POST requests from the Health Auto Export app."""
+    
+    # Authenticate webhook via header or query parameter
+    secret = os.environ.get("WEBHOOK_SECRET")
+    if secret:
+        token = request.headers.get("X-Webhook-Secret") or request.args.get("token")
+        if token != secret:
+            return {"error": "Unauthorized"}, 401
+
     # The app automatically sets the Content-Type to application/json
-    health_payload = request.json 
+    health_payload = request.json
     
     # Debug: Dump the raw payload to disk so we can see what the app is actually sending
     try:
@@ -45,13 +53,25 @@ def health_webhook():
                         latest_hr = qty
                         
         if latest_hr:
+            # Basic validation to ensure heart rate is a realistic positive number
+            try:
+                latest_hr = float(latest_hr)
+                if latest_hr <= 0 or latest_hr > 300:
+                    raise ValueError("Unrealistic heart rate value")
+            except (ValueError, TypeError):
+                print(f"[Webhook Error] Invalid heart rate value: {latest_hr}")
+                return {"error": "Invalid heart rate data"}, 400
+
             print(f"❤️ [APPLE HEALTH] Live HR Update: {latest_hr} BPM")
-            # Write it to disk so the Streamlit dashboard can instantly read it
-            with open(LIVE_DATA_FILE, "w") as f:
+            
+            # Write to a temporary file and atomically replace to prevent read-during-write races
+            tmp_file = f"{LIVE_DATA_FILE}.tmp"
+            with open(tmp_file, "w") as f:
                 json.dump({
                     "heart_rate": latest_hr,
                     "timestamp": time.time()
                 }, f)
+            os.replace(tmp_file, LIVE_DATA_FILE)
                 
     except Exception as e:
         print(f"[Webhook Error] Failed to parse payload: {e}")
