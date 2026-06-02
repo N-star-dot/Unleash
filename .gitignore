@@ -12,3 +12,7 @@ models/
 # runtime biometric artifacts (health_webhook.py)
 live_biometrics.json
 raw_webhook_dump.json
+# runtime memory store (mem0 SQLite history — regenerated each run)
+mem0_history.db
+# macOS
+.DS_Store
