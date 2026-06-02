@@ -4,7 +4,7 @@
 
 A multi-agent AI "service dog" for visually-impaired and anxiety-prone users. A phone/wearable camera sees the world, biometrics sense distress, an LLM decides what matters *right now*, and a calm voice guides the user — escalating to a human caregiver only in a real emergency.
 
-Built for SundAI Hack & Learn / #BosTechWeek · Repo: `N-star-dot/Unleash`
+Repo: `N-star-dot/Unleash`
 
 ---
 
