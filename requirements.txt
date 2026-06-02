@@ -10,3 +10,7 @@ torch
 numpy
 fastapi
 uvicorn
+# Live geo map (geo_map.py / hud_theme.py)
+pydeck
+streamlit-js-eval
+streamlit-autorefresh

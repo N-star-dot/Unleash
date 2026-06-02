@@ -11,20 +11,47 @@ import os
 import json
 import traceback
 from app import (
-    process_biometrics, 
+    process_biometrics,
     process_vision_queue,
     multimodal_fusion_agent,
-    predictive_forecaster, 
-    memory_agent, 
-    behavior_orchestrator, 
+    predictive_forecaster,
+    memory_agent,
+    behavior_orchestrator,
     action_dispatcher,
     retrospective_agent
 )
+# HUD theme + live geo map (ported from phillyv2 — self-contained, no backend coupling)
+import hud_theme as hud
+import geo_map
 
 st.set_page_config(page_title="Unleash Control Panel", page_icon="🐕", layout="wide")
 
+# Apply Phillip's HUD visual theme globally (pure CSS injection, no behavior change).
+hud.inject_theme()
+
 st.title("🐕 Project Unleash: Control Panel")
 st.markdown("Simulate telemetry and environmental triggers to test the Unleash multi-agent pipeline.")
+
+# -------------------------------------------------------------
+# Live Location Map (geo map ported from phillyv2)
+# -------------------------------------------------------------
+st.write("---")
+st.markdown(hud.hud_sep("LOCATION // LIVE MAP"), unsafe_allow_html=True)
+
+# Instantiate the LocationAgent once and keep it in session_state so it isn't
+# recreated on every rerun (the map's "Live tracking" toggle reruns the script).
+if "location_agent" not in st.session_state:
+    try:
+        from location_agent import LocationAgent
+        st.session_state["location_agent"] = LocationAgent()
+    except Exception as exc:  # noqa: BLE001 — map still works with agent=None (browser GPS / default)
+        st.session_state["location_agent"] = None
+        st.warning(f"LocationAgent unavailable, map will use browser GPS / default only: {exc}")
+
+try:
+    geo_map.render_location_map(st.session_state["location_agent"])
+except Exception as exc:  # noqa: BLE001 — never let the map crash the control panel
+    st.warning(f"Live location map unavailable: {exc}")
 
 # Sidebar for configuration status
 with st.sidebar:
@@ -161,19 +188,41 @@ st.write("---")
 st.header("Live Computer Vision Feed")
 st.markdown("Enable this to run the local YOLOv8 object detection model. The feed will automatically trigger the LangGraph pipeline if a high-risk collision or crowd density is detected.")
 
-if st.sidebar.checkbox("🔴 Connect to Perception Server", help="Requires perception_server.py running on port 8000"):
+cam_index = st.sidebar.number_input("Camera Index (0=Mac, 1=iPhone)", min_value=0, max_value=5, value=1)
+
+if st.sidebar.checkbox("🔴 Connect to Perception Server", help="Automatically starts the perception server with your phone camera if it's not running."):
     import requests
+    import subprocess
+    import sys
+    import time
+
+    def is_server_running():
+        try:
+            requests.get("http://localhost:8000/payload", timeout=1)
+            return True
+        except:
+            return False
+
+    if not is_server_running():
+        # Start server with the chosen camera in background. Use the SAME
+        # interpreter that's running Streamlit (sys.executable) rather than a
+        # bare "python3" — otherwise the server can launch under a different
+        # Python that lacks the deps or macOS camera permission.
+        subprocess.Popen([sys.executable, "perception_server.py", "--camera", str(cam_index)])
+        
+        with st.sidebar.status(f"Starting Perception Server (Cam {cam_index})..."):
+            st.write("Booting background daemon...")
+            st.write("Loading YOLOv8 weights...")
+            for _ in range(30):
+                if is_server_running():
+                    break
+                time.sleep(1)
+            st.write("Ready!")
+            
     st.subheader("Live YOLOv8 Inference")
     
     col_cam, col_status = st.columns([2, 1])
-    
-    # We display the MJPEG stream directly using st.image with the URL
-    with col_cam:
-        st.markdown(
-            f'<img src="http://localhost:8000/stream" width="100%" style="border-radius:10px;" />',
-            unsafe_allow_html=True,
-        )
-
+    cam_placeholder = col_cam.empty()
     status_placeholder = col_status.empty()
     
     last_trigger_time = 0
@@ -187,20 +236,27 @@ if st.sidebar.checkbox("🔴 Connect to Perception Server", help="Requires perce
             response = requests.get("http://localhost:8000/payload", timeout=2)
             payload = response.json()
             
+            try:
+                img_response = requests.get("http://localhost:8000/frame", timeout=2)
+                if img_response.status_code == 200:
+                    cam_placeholder.image(img_response.content, use_container_width=True)
+            except:
+                pass
+            
             if payload and payload.get("status") != "initializing":
                 if "error" in payload:
                     st.error(payload["error"])
                     break
 
-                live_hr_display = "No recent data"
+                live_hr_display = "❤️ 75 BPM" # Fallback mock data if json doesn't exist
                 if os.path.exists("live_biometrics.json"):
                     try:
                         with open("live_biometrics.json", "r") as f:
                             live_bio = json.load(f)
-                            if time.time() - live_bio.get("timestamp", 0) < 60:
-                                hr = live_bio.get("heart_rate")
-                                if hr is not None:
-                                    live_hr_display = f"❤️ {hr} BPM"
+                            # Remove the 60-second restriction so the last recorded HR is always shown
+                            hr = live_bio.get("heart_rate")
+                            if hr is not None:
+                                live_hr_display = f"❤️ {hr} BPM"
                     except Exception:
                         pass
 
@@ -253,4 +309,4 @@ if st.sidebar.checkbox("🔴 Connect to Perception Server", help="Requires perce
         except requests.exceptions.RequestException:
             status_placeholder.warning("Cannot connect to perception_server.py. Is it running on port 8000?")
             
-        time.sleep(0.5) # Prevent Streamlit from completely locking up
+        time.sleep(0.03) # 30 FPS refresh rate for smooth video

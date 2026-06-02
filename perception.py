@@ -183,9 +183,30 @@ def vision_generator(camera_index=1):
     print("Loading EasyOCR...", file=sys.stderr)
     ocr_worker = OCRWorker(easyocr.Reader(["en"], verbose=False))
 
-    cap = cv2.VideoCapture(camera_index, cv2.CAP_AVFOUNDATION)
-    if not cap.isOpened():
-        yield None, {"error": f"Cannot open camera {camera_index}. Try changing the Camera Index to 0 or 2."}
+    # The iPhone Continuity Camera typically takes several seconds to wake up and
+    # often reports "opened" a moment before it actually streams its first frame.
+    # Opening once and giving up loses that race and bricks the server until it's
+    # restarted, so retry the open (plus a few warm-up reads) before failing.
+    MAX_OPEN_ATTEMPTS = 12
+    cap = None
+    for attempt in range(1, MAX_OPEN_ATTEMPTS + 1):
+        cap = cv2.VideoCapture(camera_index, cv2.CAP_AVFOUNDATION)
+        if cap.isOpened():
+            ret = False
+            for _ in range(10):
+                ret, _ = cap.read()
+                if ret:
+                    break
+                time.sleep(0.3)
+            if ret:
+                break
+        print(f"Camera {camera_index} not ready (attempt {attempt}/{MAX_OPEN_ATTEMPTS}), retrying...", file=sys.stderr)
+        cap.release()
+        cap = None
+        time.sleep(1.0)
+
+    if cap is None or not cap.isOpened():
+        yield None, {"error": f"Cannot open camera {camera_index} after {MAX_OPEN_ATTEMPTS} attempts. Make sure your iPhone is unlocked once and nearby with Continuity Camera enabled, or try a different Camera Index (0, 1, or 2)."}
         return
 
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))

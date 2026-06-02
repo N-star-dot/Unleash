@@ -29,6 +29,17 @@ def camera_loop(camera_index):
 def get_payload():
     return latest_payload
 
+from fastapi import Response
+
+@app.get("/frame")
+def get_frame():
+    global latest_frame
+    if latest_frame is not None:
+        ret, buffer = cv2.imencode('.jpg', latest_frame)
+        if ret:
+            return Response(content=buffer.tobytes(), media_type="image/jpeg")
+    return Response(status_code=404)
+
 def generate_mjpeg():
     global latest_frame
     while True:
