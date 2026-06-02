@@ -1,0 +1,10 @@
+# Unleash HUD — Streamlit theme. Without this, Streamlit defaults to a LIGHT
+# base and native widgets (buttons, toggles) render white against the dark HUD.
+# These map to hud_theme.py's tokens (cyan #00D4FF / deep #080C14 / card #0C1220).
+[theme]
+base = "dark"
+primaryColor = "#00D4FF"
+backgroundColor = "#080C14"
+secondaryBackgroundColor = "#0C1220"
+textColor = "#E0F2FE"
+font = "monospace"
