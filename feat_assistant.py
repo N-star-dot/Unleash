@@ -24,6 +24,7 @@ import html
 
 import streamlit as st
 
+import geo_map
 import hud_theme as hud
 
 
@@ -45,6 +46,7 @@ def _init_state() -> None:
     st.session_state.setdefault("feat_chat_a", "")         # last general-chat answer
     st.session_state.setdefault("feat_chat_q", "")         # last general-chat question
     st.session_state.setdefault("feat_event_count", None)  # today's event count
+    st.session_state.setdefault("feat_gps_fix", None)      # last real browser GPS fix dict
 
 
 # ---- cached agents (one instance each, reused across reruns) ---------------
@@ -263,6 +265,9 @@ def _render_location_panel() -> None:
         ),
         unsafe_allow_html=True,
     )
+
+    # Real-GPS current-location map (cyan dot on Carto dark) — fail-soft, never raises.
+    geo_map.render_location_map(_location_agent())
 
     # Directions — honestly labelled as straight-line / estimated, not turn-by-turn.
     with st.form("feat_directions_form", clear_on_submit=False):
