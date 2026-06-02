@@ -39,7 +39,16 @@ SILENCE_FRAMES  = 8         # 0.8s of silence ends an utterance
 CALIBRATE_SECS  = 1.5       # ambient noise calibration window
 ENERGY_MARGIN   = 1.6       # multiplier above ambient to count as speech
 MIN_SPEECH_FRAMES = 3       # ignore utterances shorter than 0.3s (noise bursts)
-MIC_DEVICE      = int(os.environ.get("MIC_DEVICE", "3"))  # MacBook Air Microphone
+def _resolve_mic() -> int | None:
+    if "MIC_DEVICE" in os.environ:
+        return int(os.environ["MIC_DEVICE"])
+    import sounddevice as _sd
+    for d in _sd.query_devices():
+        if "MacBook Air Microphone" in d["name"] and d["max_input_channels"] > 0:
+            return d["index"]
+    return None  # fall back to system default
+
+MIC_DEVICE = _resolve_mic()
 
 
 # ─── Audio capture ───────────────────────────────────────────────────────────

@@ -27,7 +27,26 @@ except ImportError:
     pass
 
 VOICE = os.environ.get("VOICE", "Samantha")
-_LIVE_PERCEPTION = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_perception.json")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_LIVE_PERCEPTION = os.path.join(_HERE, "live_perception.json")
+_LIVE_VOICE = os.path.join(_HERE, "live_voice.json")
+
+
+def _write_live_voice(heard: str, thinking: str, response: str, action: str) -> None:
+    """Write the latest voice exchange so the dashboard (ui.py) can display it live."""
+    try:
+        tmp = _LIVE_VOICE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({
+                "timestamp": int(time.time() * 1000),
+                "heard":     heard,
+                "thinking":  thinking,
+                "response":  response,
+                "action":    action,
+            }, f)
+        os.replace(tmp, _LIVE_VOICE)  # atomic — UI never reads a half-written file
+    except Exception as e:
+        print(f"[voice_bridge] could not write live_voice.json: {e}", file=sys.stderr)
 
 
 def _read_live_perception() -> dict:
@@ -63,6 +82,7 @@ def _load_brain():
                 pattern_detector,
                 memory_agent,
                 behavior_orchestrator,
+                action_dispatcher,
             )
         finally:
             os.dup2(_saved, 2)
@@ -74,6 +94,7 @@ def _load_brain():
             "pattern_detector":      pattern_detector,
             "memory_agent":          memory_agent,
             "behavior_orchestrator": behavior_orchestrator,
+            "action_dispatcher":     action_dispatcher,
         })
         print("\n✅ Brain ready — you can speak now!\n", file=sys.stderr)
     except Exception as e:
@@ -98,7 +119,7 @@ def speak(text: str) -> None:
     if _current_speech and _current_speech.poll() is None:
         _current_speech.kill()
         _current_speech.wait()
-    print(f"ARGUS: {text}", file=sys.stderr)
+    print(f"UNLEASH: {text}", file=sys.stderr)
     _current_speech = subprocess.Popen(["say", "-v", VOICE, text])
 
 
@@ -116,7 +137,17 @@ def run_pipeline(voice_text: str) -> str:
     state.update(_pipeline_fns["pattern_detector"](state))
     state.update(_pipeline_fns["memory_agent"](state))
     state.update(_pipeline_fns["behavior_orchestrator"](state))
-    return state.get("final_action", "")
+    # Action agent — turns the directive into a (simulated) hardware/API action.
+    state.update(_pipeline_fns["action_dispatcher"](state))
+
+    response = state.get("final_action", "")
+    _write_live_voice(
+        heard=voice_text,
+        thinking=state.get("reasoning", ""),
+        response=response,
+        action=state.get("execution_status", ""),
+    )
+    return response
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

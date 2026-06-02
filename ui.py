@@ -241,3 +241,94 @@ def run_pipeline(telemetry: dict, arm_real_calls: bool = False) -> dict:
 
     except ImportError:
         st.error("Missing CV dependencies. Please run: pip install opencv-python ultralytics")
+
+
+# ===========================================================================
+# VOICE AGENT — auto-start on load + live exchange panel (the demo surface).
+# ===========================================================================
+import sys as _sys
+import subprocess
+
+_LIVE_VOICE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_voice.json")
+
+
+@st.cache_resource
+def _start_voice_agent():
+    """Launch the always-on voice pipeline ONCE per Streamlit server process.
+
+        listen_agent.py (mic + STT)  →  voice_bridge.py (brain → action → speak,
+        and writes live_voice.json)
+
+    @st.cache_resource makes this a singleton: it runs the first time the page
+    loads and is reused across every rerun/session, so the mic isn't relaunched
+    and duplicate processes never pile up.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    return subprocess.Popen(
+        f'"{_sys.executable}" listen_agent.py | "{_sys.executable}" voice_bridge.py',
+        shell=True, cwd=here,
+    )
+
+
+def _read_live_voice() -> dict:
+    """Latest voice exchange written by voice_bridge.py ({} if none yet)."""
+    try:
+        with open(_LIVE_VOICE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _voice_row(label: str, value: str, accent: str, *, italic: bool = False) -> str:
+    style = "font-style:italic;" if italic else ""
+    shown = _esc(value) if value else "<span style='color:var(--hud-muted)'>—</span>"
+    return (
+        '<div style="display:flex;gap:12px;padding:10px 0;'
+        'border-bottom:1px solid var(--border-subtle)">'
+        f'<span style="min-width:92px;font-family:var(--font-mono);font-size:11px;'
+        f'letter-spacing:1px;color:var({accent})">{label}</span>'
+        f'<span style="flex:1;font-size:14px;color:var(--text-primary);{style}">{shown}</span>'
+        '</div>'
+    )
+
+
+@st.fragment(run_every=1.0)
+def _render_voice_panel() -> None:
+    """Live VOICE panel — refreshes itself every second, no full-page reload."""
+    proc = _start_voice_agent()
+    alive = proc is not None and proc.poll() is None
+    status_pill = hud.pill("LISTENING", "live") if alive else hud.pill("OFFLINE", "danger")
+
+    data = _read_live_voice()
+    if not data:
+        body = (
+            '<div role="status" aria-live="polite" style="color:var(--hud-muted);'
+            'font-size:14px">Voice agent online — say something '
+            '(e.g. &ldquo;what&rsquo;s in front of me?&rdquo;).</div>'
+        )
+    else:
+        body = (
+            '<div role="status" aria-live="polite" aria-atomic="true">'
+            + _voice_row("HEARD", data.get("heard", ""), "--hud-cyan")
+            + _voice_row("THINKING", data.get("thinking", ""), "--hud-warning", italic=True)
+            + _voice_row("RESPONSE", data.get("response", ""), "--hud-success")
+            + _voice_row("ACTION", data.get("action", ""), "--hud-label")
+            + '</div>'
+        )
+    st.markdown(
+        hud.panel("VOICE // LIVE", "MIC → BRAIN → ACTION → SPEECH", body, status_pill),
+        unsafe_allow_html=True,
+    )
+
+
+# --- Voice agent: one panel of the dashboard (does NOT own the page) --------
+# Auto-start the mic + brain on first load, then render the live exchange as a
+# single contained panel. The rest of the dashboard (run_pipeline above) is left
+# intact; this only adds the voice section, it never replaces the UI.
+def render_voice_section() -> None:
+    _start_voice_agent()  # kick off the mic + brain immediately on first load
+    st.markdown(hud.hud_sep("VOICE AGENT // ALWAYS ON"), unsafe_allow_html=True)
+    _render_voice_panel()
+
+
+render_voice_section()
