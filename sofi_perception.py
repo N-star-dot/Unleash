@@ -207,6 +207,7 @@ def main():
     frame_n      = 0
     struct_cache: list = []
     weapon_cache: list = []
+    eye_contact_timers: dict = {}
 
     while True:
         ret, frame = cap.read()
@@ -221,7 +222,7 @@ def main():
         seen: set   = set()
         total_ppl   = 0
 
-        for box in nav_model(frame, verbose=False)[0].boxes:
+        for box in nav_model.track(frame, persist=True, verbose=False)[0].boxes:
             label = nav_model.names[int(box.cls[0])]
             conf  = float(box.conf[0])
             if label not in NAV_CLASSES or conf < CONF_NAV: continue
@@ -238,7 +239,18 @@ def main():
                 if not person_is_relevant(vel, prox, facing):
                     seen.add(label)
                     continue   # skip — not approaching or not facing camera
-                interacting = bool(facing) and vel not in ("crossing-L", "crossing-R", "receding")
+                
+                track_id = int(box.id[0]) if box.id is not None else None
+                interacting = False
+                
+                if facing and track_id is not None:
+                    if track_id not in eye_contact_timers:
+                        eye_contact_timers[track_id] = time.time()
+                    elif time.time() - eye_contact_timers[track_id] >= 5.0:
+                        interacting = True
+                elif track_id is not None and track_id in eye_contact_timers:
+                    del eye_contact_timers[track_id]
+
                 detections.append({
                     "label":          "person",
                     "confidence":     round(conf, 2),

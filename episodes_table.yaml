@@ -1,7 +1,7 @@
-name: Unleash_Data
+name: Unleash_Data_V3
 schema_type: CUSTOM
 column_schema:
-  episode_id: String
+  item_id: String
   precursor_state: String
   intervention_chosen: String
   quality_score: Float

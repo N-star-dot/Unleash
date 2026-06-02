@@ -1,10 +1,16 @@
 name: unleash_memory_engine
+version: v2
 data:
   item_table:
-    name: Unleash_Data
+    name: Unleash_Data_V3
     type: table
+index:
+  embeddings:
+    - name: precursor_similarity
+      encoder:
+        type: hugging_face
+        model_name: sentence-transformers/all-MiniLM-L6-v2
+        item_fields: [precursor_state]
 training:
-  models:
-    - name: precursor_embedding
-      policy_type: text_embedding
-      text_columns: [precursor_state]
+  compute:
+    gpu_count: 0
