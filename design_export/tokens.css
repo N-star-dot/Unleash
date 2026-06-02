@@ -1,0 +1,42 @@
+/* Unleash — Design Tokens (extracted from untitled.pen)
+   Single source of truth for the tactical HUD aesthetic.
+   Import once at app root: @import "./tokens.css";
+*/
+:root {
+  /* --- HUD core palette --- */
+  --hud-bg:        #080C14;  /* page background */
+  --hud-card:      #0C1220;  /* panels */
+  --hud-inset:     #0A0F1C;  /* inset wells (camera, chips) */
+  --hud-border:    #00D4FF33; /* hairline borders (cyan 20%) */
+
+  /* --- cyan accent + alpha tints --- */
+  --hud-cyan:      #00D4FF;
+  --hud-cyan-08:   #00D4FF14;
+  --hud-cyan-12:   #00D4FF1F;
+  --hud-cyan-20:   #00D4FF33;
+  --hud-cyan-40:   #00D4FF66;
+  --hud-muted:     #00D4FF73; /* decorative separators only (cyan 45%, ~3:1) */
+  --hud-label:     #8FB8C8;   /* readable label/subtitle text (>=4.5:1 on dark) */
+  --hud-text:      #E0F2FE;   /* primary text */
+
+  /* --- state colors (semantic) --- */
+  --hud-success:    #00E676;  --hud-success-12: #00E6761F; /* safe / live */
+  --hud-warning:    #FFB300;  --hud-warning-12: #FFB3001F; /* heads-up */
+  --hud-danger:     #FF5252;  --hud-danger-12:  #FF52521F; /* alert / hazard */
+  --hud-memory:     #A78BFA;  --hud-memory-12:  #A78BFA22; /* memory accents */
+
+  /* --- alt brand palette (Command Center / marketing) --- */
+  --accent:        #34E0CE;  --accent-blue: #5390FF;  --accent-dim: #34E0CE26;
+  --bg-base:       #0C111A;  --bg-deep: #080B11;  --bg-panel: #111824;
+  --bg-elevated:   #161F2E;  --bg-inset: #0A0F17;  --bg-glow: #161F2E;
+  --border-strong: #2C3D54;  --border-subtle: #1E2A3C;
+  --text-primary:  #EAF1FA;  --text-secondary: #8C9BB2;  --text-muted: #566276;
+  --safe: #3FE08A; --safe-dim: #3FE08A22; --warn: #FFB23E; --danger: #FF4D5E;
+
+  /* --- typography --- */
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-body: "Inter", system-ui, -apple-system, sans-serif;
+
+  /* --- radii used in the design --- */
+  --r-sm: 3px; --r-md: 4px; --r-lg: 6px;
+}

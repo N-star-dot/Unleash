@@ -23,7 +23,10 @@ import operator
 from mem0 import Memory
 from groq import Groq
 import requests
-from shaped import Client as ShapedClient
+from dotenv import load_dotenv
+
+# Load secrets from a local .env file if present (GEMINI_API_KEY, WANDB_API_KEY, etc.)
+load_dotenv()
 
 # Weave — suppress all output, use no-op stub so @weave.op() decorators keep working
 class _WeaveStub:
@@ -45,6 +48,16 @@ except (FileNotFoundError, json.JSONDecodeError) as e:
 # =====================================================================
 # 1. INITIALIZATION & CONFIGURATION
 # =====================================================================
+# Initialize Weights & Biases Weave tracking.
+# Project is overridable via WEAVE_PROJECT. Never let a W&B outage or permission
+# issue crash the app — tracing is a nice-to-have, not required to run.
+WEAVE_PROJECT = os.environ.get(
+    "WEAVE_PROJECT", "nghiatr38-boston-university/project-argus-service-dog"
+)
+try:
+    weave.init(WEAVE_PROJECT)
+except Exception as e:
+    print(f"[weave] cloud tracing disabled ({type(e).__name__}); continuing without it.")
 
 # Configure Mem0 to use Groq for text processing and Gemini for vector embeddings
 mem0_config = {
@@ -72,24 +85,23 @@ mem0_config = {
         }
     }
 }
-
-# Bulletproof patch: Manually force mem0's internal telemetry flags to False 
-# so it doesn't try to create the migrations_qdrant folder and crash on hot-reloads
+# Build the heavy clients fail-soft: importing this module must NEVER raise (ui.py
+# imports it at module load, before any of its defensive try/except runs). With no
+# GEMINI_API_KEY both constructors raise; in that case we degrade to None and each
+# agent below guards on it, so the dashboard still renders and runs in Safe mode.
 try:
-    import mem0.memory.telemetry
-    mem0.memory.telemetry.MEM0_TELEMETRY = False
-    import mem0.memory.main
-    mem0.memory.main.MEM0_TELEMETRY = False
-except Exception:
-    pass
+    memory_client = Memory.from_config(mem0_config)
+except Exception as e:
+    memory_client = None
+    print(f"[mem0] memory disabled ({type(e).__name__}); set GEMINI_API_KEY to enable.")
 
-memory_client = Memory.from_config(mem0_config)
-
-# Initialize Groq Client for Lightning-Fast Llama-3 Inference
-ai_client = Groq()
-
-# Initialize Shaped SDK
-shaped_client = ShapedClient(api_key=os.environ.get("SHAPED_API_KEY"))
+# Initialize the official Google GenAI client
+# It automatically picks up os.environ["GEMINI_API_KEY"]
+try:
+    ai_client = genai.Client()
+except Exception as e:
+    ai_client = None
+    print(f"[genai] LLM disabled ({type(e).__name__}); set GEMINI_API_KEY to enable.")
 
 # =====================================================================
 # 2. THE CONFLICT BUS DEFINITION (LangGraph State)
@@ -231,9 +243,9 @@ def pattern_detector(state: ConflictBusState) -> dict:
 def memory_agent(state: ConflictBusState) -> dict:
     """Agent 3: Case-based reasoning using ShapedQL for ranked retrieval."""
     predictions = state.get("active_predictions", [])
-    if not predictions:
+    if not predictions or memory_client is None:
         return {"retrieved_memories": []}
-        
+
     latest_pred = predictions[-1]["description"]
     
     shaped_query = f"""
@@ -262,10 +274,9 @@ def memory_agent(state: ConflictBusState) -> dict:
 def behavior_orchestrator(state: ConflictBusState) -> dict:
     """Agent 4: Responds to voice input and active predictions via Groq."""
     predictions = state.get("active_predictions", [])
-    memories    = state.get("retrieved_memories", [])
-    voice_input = state.get("voice_input", "").strip()
+    memories = state.get("retrieved_memories", [])
 
-    if not predictions and not voice_input:
+    if not predictions or ai_client is None:
         return {"final_action": "Maintain passive navigation mode (Safe)"}
 
     prompt = f"""You are ARGUS, an AI service-dog assistant for a visually impaired user.
@@ -308,12 +319,10 @@ If neither, output only: Maintain passive navigation mode (Safe)
 def retrospective_agent(state: ConflictBusState, resolution_success: bool):
     """Agent 5: Saves structured outcomes to Shaped AI for future ranking."""
     predictions = state.get("active_predictions", [])
-    if not predictions:
+    if not predictions or memory_client is None:
         return
-        
-    # Calculate a mock quality score based on the outcome
-    # In a real scenario, this would be derived from post-intervention HR stabilization
-    quality_score = 95 if resolution_success else 20
+
+    episode_summary = f"Context: {predictions[-1]['description']} | Action: {state['final_action']} | Success: {resolution_success}"
     
     # Push the structured memory to Shaped
     try:
@@ -333,11 +342,19 @@ def retrospective_agent(state: ConflictBusState, resolution_success: bool):
     except Exception as e:
         print(f"[Retrospective Agent] Error logging to Shaped: {e}")
 
-def _trigger_bland_ai_call(reason: str) -> str:
-    """Helper to dispatch a live AI voice call via Bland AI."""
+def _trigger_bland_ai_call(reason: str, arm_real_calls: bool = False) -> str:
+    """Helper to dispatch a live AI voice call via Bland AI.
+
+    When `arm_real_calls` is False the call is ALWAYS simulated — this gate is
+    explicit and thread-safe (no global env mutation), so a disarmed run can
+    never place a live call even under Streamlit's concurrent reruns.
+    """
+    if not arm_real_calls:
+        return "[SIMULATED BLAND AI] Calls disarmed (ARM REAL CALLS off). Simulated call dispatched."
+
     bland_api_key = os.environ.get("BLAND_API_KEY")
     caregiver_phone = os.environ.get("CAREGIVER_PHONE")
-    
+
     if not bland_api_key or not caregiver_phone:
         return "[SIMULATED BLAND AI] Missing BLAND_API_KEY or CAREGIVER_PHONE env vars. Simulated call dispatched."
         
@@ -364,10 +381,12 @@ def action_dispatcher(state: ConflictBusState) -> dict:
     action = state.get("final_action", "")
     predictions = state.get("active_predictions", [])
     reason_context = predictions[-1]["description"] if predictions else "Unknown physiological anomaly"
-    
+    # Safety gate threaded explicitly through state (default OFF = always simulated).
+    arm_real_calls = bool(state.get("arm_real_calls", False))
+
     # Mock routing table for physical actions
     if "emergency services" in action.lower():
-        status = _trigger_bland_ai_call(reason_context)
+        status = _trigger_bland_ai_call(reason_context, arm_real_calls)
         return {"execution_status": status}
     elif "airpods" in action.lower():
         # e.g., trigger Apple HealthKit/Bluetooth
