@@ -1,17 +1,19 @@
 """feat_memory.py — FEAT // Memory & Persistence tab body.
 
-The "it remembers / it learns" story. Renders the TripleSave row — the three
-persistence layers behind the conflict bus — plus a live recall demo, all in the
-tactical cyan/teal HUD. Honest by design (PRD §2, 🟡 caveat): episodic *history*
-persists in SQLite across restarts, but the Qdrant vector store starts EMPTY on
-each launch (`path=":memory:"`) and is NOT rehydrated from SQLite yet — so
-semantic recall is in-session only. The panel labels this plainly.
+The "it remembers / it learns" story. Renders the persistence layers behind the
+conflict bus — plus a live recall demo, all in the tactical cyan/teal HUD. Honest
+by design (PRD §2, 🟡 caveat): Shaped is the primary ranked episodic recall
+engine (cross-session), episodic *history* persists in SQLite across restarts,
+and a secondary local mem0/Qdrant vector layer starts EMPTY on each launch
+(`path=":memory:"`) and is NOT rehydrated from SQLite yet. The panel labels this
+plainly.
 
 Backend it maps to (app.py):
-  - mem0_config         → Qdrant `:memory:`, dim 768, history_db `mem0_history.db`
-  - memory_client       → Mem0 client (None when GEMINI_API_KEY is missing)
-  - retrospective_agent → writes episodes back to Mem0
-  - memory_agent        → semantic recall via Mem0
+  - shaped_client       → Shaped ranked recall (primary; needs SHAPED_API_KEY)
+  - mem0_config         → local mem0/Qdrant `:memory:`, dim 384, history_db `mem0_history.db`
+  - memory_client       → mem0 client (None when SHAPED_API_KEY is missing)
+  - retrospective_agent → writes episodes to Shaped
+  - memory_agent        → ranked recall via Shaped
   - WEAVE_PROJECT       → W&B Weave cloud decision trace
 
 Exposes exactly:  def render() -> None
@@ -37,7 +39,7 @@ except Exception as exc:  # noqa: BLE001 — never crash the tab on import
     memory_client = None
     mem0_config = {}
     WEAVE_PROJECT = os.environ.get(
-        "WEAVE_PROJECT", "nghiatr38-boston-university/project-argus-service-dog"
+        "WEAVE_PROJECT", "phillipsle997-boston-university/unleash-service-dog"
     )
     _IMPORT_ERR = exc
 else:
@@ -124,13 +126,13 @@ def _qdrant_path() -> str:
 def _recall(query: str) -> tuple[list[str], str | None]:
     """Return (episodes, warning). Honest about the in-session-only caveat.
 
-    memory_client may be None (no GEMINI_API_KEY) — guard and degrade to a
-    warning instead of crashing.
+    memory_client may be None (no GROQ_API_KEY for mem0's LLM) — guard and degrade
+    to a warning instead of crashing.
     """
     if memory_client is None:
         return [], (
-            "Vector store offline — set GEMINI_API_KEY to enable semantic recall. "
-            "(History below still persists in SQLite.)"
+            "Local mem0/Qdrant layer offline — set GROQ_API_KEY to enable it. "
+            "(The pipeline's primary recall is Shaped; SQLite history below still persists.)"
         )
     try:
         res = memory_client.search(query=query, filters={"user_id": _USER_ID})
@@ -213,7 +215,8 @@ def render() -> None:
     # the in-session counter; VECTOR DIM comes from mem0_config.
     episodes_val = "—" if sql["rows"] is None else str(sql["rows"])
     episodes_badge = "SQLITE" if sql["rows"] is not None else "OFFLINE"
-    mem_online = memory_client is not None
+    mem_online = memory_client is not None              # local mem0/Qdrant vector layer
+    shaped_on = bool(os.environ.get("SHAPED_API_KEY"))  # pipeline's Shaped recall engine
     m1, m2, m3, m4 = st.columns(4)
     with m1:
         st.markdown(
@@ -232,44 +235,45 @@ def render() -> None:
         )
     with m3:
         st.markdown(
-            hud.stat_card(str(dim), "VECTOR DIM", "GEMINI", "cyan"),
+            hud.stat_card(str(dim), "VECTOR DIM", "MINILM", "cyan"),
             unsafe_allow_html=True,
         )
     with m4:
         st.markdown(
             hud.stat_card(
-                "ON" if mem_online else "OFF",
-                "VECTOR STORE",
-                "QDRANT" if mem_online else "NO KEY",
-                "success" if mem_online else "warning",
+                "ON" if shaped_on else "OFF",
+                "RECALL ENGINE",
+                "SHAPED" if shaped_on else "NO KEY",
+                "success" if shaped_on else "warning",
             ),
             unsafe_allow_html=True,
         )
 
     # ---- TRIPLE-SAVE row ----
-    st.markdown(hud.hud_sep("TRIPLE-SAVE // PERSISTENCE LAYERS"), unsafe_allow_html=True)
+    st.markdown(hud.hud_sep("RECALL // PERSISTENCE LAYERS"), unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
 
-    # 1) QDRANT VECTOR STORE — in-session semantic recall (purple / memory accent).
+    # 1) SHAPED RANKED RECALL — primary cross-session episodic recall (memory accent).
     with c1:
         body = (
-            _kv("BACKEND", "Qdrant", "--hud-memory")
+            _kv("BACKEND", "Shaped (ranked recall)", "--hud-memory")
+            + _kv("LOCAL LAYER", "mem0 / Qdrant", "--hud-memory")
             + _kv("PATH", qdrant_path, "--hud-memory")
-            + _kv("COLLECTION", "argus_memory", "--hud-memory")
+            + _kv("COLLECTION", "unleash_memory", "--hud-memory")
             + _kv("DIM", str(dim), "--hud-memory")
-            + _kv("EMBEDDER", "gemini-embedding-001", "--hud-memory")
+            + _kv("EMBEDDER", "all-MiniLM-L6-v2 (HF)", "--hud-memory")
             + _note(
-                "In-session semantic recall. Rebuilds on restart "
-                "(not rehydrated from SQLite yet).",
+                "Shaped ranks episodes across sessions. The local mem0/Qdrant "
+                "layer rebuilds on restart (not rehydrated from SQLite yet).",
                 "--hud-memory",
             )
         )
         st.markdown(
             hud.panel(
-                "QDRANT VECTOR STORE",
-                "SEMANTIC // IN-SESSION",
+                "SHAPED RANKED RECALL",
+                "RANKED // CROSS-SESSION",
                 body,
-                hud.pill("IN-SESSION", "cyan"),
+                hud.pill("CROSS-SESSION", "cyan"),
             ),
             unsafe_allow_html=True,
         )
@@ -331,7 +335,8 @@ def render() -> None:
             "Recall a situation",  # labeled control (a11y)
             key="feat_mem_query",
             placeholder="e.g. approaching crowd, panic attack precursor…",
-            help="Semantic search over this session's episodic memory (Mem0 + Qdrant).",
+            help="In-session probe of the local mem0/Qdrant vector layer. "
+                 "(The pipeline's primary recall engine is Shaped.)",
         )
         submitted = st.form_submit_button("Recall episodes", use_container_width=False)
 
@@ -380,8 +385,8 @@ def _render_recall_results(query: str) -> None:
             'font-size:12px;letter-spacing:1px">NO EPISODES RECALLED THIS SESSION.</span>'
             '<div style="color:var(--hud-muted);font-family:var(--font-mono);'
             'font-size:10px;letter-spacing:.5px;margin-top:6px;line-height:1.45">'
-            'Qdrant starts empty on launch and isn&#39;t rehydrated from SQLite yet '
-            '&mdash; run the safety pipeline to write episodes this session, then recall.'
+            'The local mem0/Qdrant layer starts empty on launch and isn&#39;t rehydrated '
+            'from SQLite yet &mdash; run the safety pipeline to write episodes, then recall.'
             '</div></div>'
         )
         st.markdown(
@@ -405,7 +410,7 @@ def _render_recall_results(query: str) -> None:
         'color:var(--hud-muted);margin-top:10px;line-height:1.5">'
         'HONEST STATUS &mdash; episodic <b style="color:var(--hud-success)">history '
         'persists</b> in SQLite across restarts; '
-        '<b style="color:var(--hud-memory)">vector recall rebuilds</b> each session '
-        '(Qdrant <code>:memory:</code>, not rehydrated from SQLite yet).</p>',
+        '<b style="color:var(--hud-memory)">the local vector layer rebuilds</b> each session '
+        '(mem0/Qdrant <code>:memory:</code>, not rehydrated from SQLite yet).</p>',
         unsafe_allow_html=True,
     )

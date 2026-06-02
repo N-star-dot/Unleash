@@ -84,8 +84,8 @@ _STAGES = [
     ("Perception", "Vision / YOLO", "scene"),
     ("Biometric", "Heart-rate claims", "bio_claims"),
     ("Pattern", "Anomaly forecast", "predictions"),
-    ("Memory", "Episodic recall", "memories"),
-    ("Orchestrator", "Gemini directive", "action"),
+    ("Memory", "Shaped ranked recall", "memories"),
+    ("Orchestrator", "Groq directive (Llama-3.3-70b)", "action"),
     ("Action", "Dispatch / arm gate", "dispatch"),
 ]
 
@@ -127,7 +127,7 @@ def _init_state() -> None:
 def _run_pipeline(telemetry: dict, arm_real_calls: bool = False) -> dict:
     """Run the full conflict-bus pipeline for one telemetry payload.
 
-    Every backend call is wrapped so a missing GEMINI_API_KEY / network / camera
+    Every backend call is wrapped so a missing GROQ_API_KEY / network / camera
     failure degrades to Safe instead of crashing. The live emergency call only
     fires when ``arm_real_calls`` is True (default OFF -> always simulated).
     """
@@ -170,20 +170,20 @@ def _run_pipeline(telemetry: dict, arm_real_calls: bool = False) -> dict:
         st.warning(f"Pattern detector unavailable: {exc}")
     state["active_predictions"] = predictions
 
-    # 3. Memory recall (Mem0 / Gemini — may need a key).
+    # 3. Memory recall (Shaped ranked retrieval — may need a key).
     memories: list = []
     try:
         memories = memory_agent(state).get("retrieved_memories", [])
     except Exception as exc:  # noqa: BLE001
-        st.warning(f"Memory agent unavailable (check GEMINI_API_KEY): {exc}")
+        st.warning(f"Memory agent unavailable (check SHAPED_API_KEY): {exc}")
     state["retrieved_memories"] = memories
 
-    # 4. Orchestrator decision (Gemini LLM — degrade to Safe on failure).
+    # 4. Orchestrator decision (Groq LLM — degrade to Safe on failure).
     action = _SAFE_ACTION
     try:
         action = behavior_orchestrator(state).get("final_action", action)
     except Exception as exc:  # noqa: BLE001
-        st.warning(f"Orchestrator unavailable (check GEMINI_API_KEY): {exc}")
+        st.warning(f"Orchestrator unavailable (check GROQ_API_KEY): {exc}")
     state["final_action"] = action
 
     # 5. Action dispatch — the LIVE emergency branch is gated by arm_real_calls.

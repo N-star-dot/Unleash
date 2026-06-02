@@ -5,7 +5,7 @@ composed in the same tactical-cyan HUD language as the rest of the app, using
 only hud_theme helpers + token colors.
 
 Scope (per FEAT_TABS_PRD.md §5):
-  • SERVICES   — API-key / service presence (Gemini, Weave/W&B, Bland, Calendar)
+  • SERVICES   — API-key / service presence (Groq, Gemini, Shaped, Weave/W&B, Bland, Calendar)
   • CONFIG     — runtime config (Weave project, camera index, runtime versions)
   • EMERGENCY  — the "ARM REAL CALLS" toggle gating live Bland AI phone calls
 
@@ -68,19 +68,37 @@ def _calendar_credentials_present() -> bool:
         return False
 
 
-# A service row: (label, detail, status_text, variant, required)
+# A service row: (label, detail, status_text, variant)
 # variant: "live" connected | "danger" missing-required | "cyan" optional-present
 #          | "muted" optional-absent (rendered as warning pill + OPTIONAL text)
 def _service_rows() -> list[tuple[str, str, str, str]]:
     rows: list[tuple[str, str, str, str]] = []
 
-    # GEMINI — required for orchestrator + memory + voice STT.
+    # GEMINI — required for voice STT + general chat / intent classification.
     gem = _env_present("GEMINI_API_KEY")
     rows.append((
         "GEMINI",
-        "GEMINI_API_KEY · LLM brain (orchestrator / memory / STT)",
+        "GEMINI_API_KEY · voice STT + general chat",
         "CONNECTED" if gem else "MISSING",
         "live" if gem else "danger",
+    ))
+
+    # GROQ — required for the orchestrator LLM (Llama-3.3-70b).
+    groq = _env_present("GROQ_API_KEY")
+    rows.append((
+        "GROQ",
+        "GROQ_API_KEY · orchestrator (Llama-3.3-70b)",
+        "CONNECTED" if groq else "MISSING",
+        "live" if groq else "danger",
+    ))
+
+    # SHAPED — required for ranked episodic memory recall.
+    shaped = _env_present("SHAPED_API_KEY")
+    rows.append((
+        "SHAPED",
+        "SHAPED_API_KEY · episodic memory recall",
+        "CONNECTED" if shaped else "MISSING",
+        "live" if shaped else "danger",
     ))
 
     # WEAVE / W&B — optional cloud trace. Needs key + project to be useful.
