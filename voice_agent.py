@@ -1,187 +1,253 @@
 """
-Unleash — Voice Agent (the user's interface to the robodog)
-===========================================================
+Voice Agent — converts perception JSON stream to spoken alerts via macOS TTS.
 
-Handles the two ends of a spoken conversation:
+Reads perception.py JSON from stdin, speaks priority-ranked alerts through
+whatever audio output is active (AirPods, speakers, etc.).
 
-    listen()      -> records mic audio, transcribes it to text (speech-to-text)
-    speak(text)   -> says text out loud (text-to-speech), e.g. to AirPods
+Priority tiers:
+  P3 THREAT   — weapons: interrupt queue, speak immediately, no cooldown
+  P2 HAZARD   — stairs / doors: 5s cooldown per label+side
+  P1 OBSTACLE — approaching or close nav objects: 3s cooldown per label+side
+  P0 AMBIENT  — low light / crowd surge: 10s cooldown
 
-Design choices (easiest + most reliable, no extra vendors):
-  * STT: Gemini. We send the recorded audio straight to Gemini for
-    transcription, so the only key needed is GEMINI_API_KEY (already used by the
-    rest of Unleash). No Whisper install, no extra account.
-  * TTS: macOS built-in `say` command (zero setup, routes to the default output
-    incl. AirPods). Falls back to pyttsx3, then to printing, on other platforms.
+Also emits one JSON line per spoken alert to stdout so it can be piped
+into the decision / memory system.
 
-Everything degrades gracefully: with no microphone you can pass text directly,
-and with no GEMINI_API_KEY the agent still speaks and accepts typed input — so
-it's fully testable without hardware.
+Usage:
+    python perception.py --camera 0 | python voice_agent.py
+    python perception.py --camera 0 | python voice_agent.py | python orchestrator.py
+    VOICE=Karen python voice_agent.py   # change voice
 """
 
-from __future__ import annotations
-
+import json
 import os
-import sys
-import shutil
-import platform
+import queue
 import subprocess
-import tempfile
-from typing import Optional
-
-try:
-    import weave
-    _WEAVE = True
-except Exception:
-    _WEAVE = False
+import sys
+import threading
+import time
 
 
-def _op(fn):
-    return weave.op()(fn) if _WEAVE else fn
+# ─── Config ───────────────────────────────────────────────────────────────────
+
+VOICE = os.environ.get("VOICE", "Samantha")  # macOS voice name
+
+COOLDOWNS = {
+    "threat":   0.0,   # always speak
+    "hazard":   5.0,   # seconds before repeating same hazard
+    "obstacle": 3.0,   # seconds before repeating same obstacle
+    "ambient":  10.0,
+}
+
+# Label → spoken word for nav detections
+NAV_SPEECH = {
+    "person":        "person",
+    "car":           "car",
+    "bicycle":       "bike",
+    "motorcycle":    "motorbike",
+    "bus":           "bus",
+    "truck":         "truck",
+    "traffic light": "traffic light",
+    "stop sign":     "stop sign",
+    "fire hydrant":  "fire hydrant",
+    "bench":         "bench",
+    "dog":           "dog",
+    "cat":           "cat",
+    "chair":         "chair",
+    "dining table":  "table",
+    "couch":         "couch",
+}
+
+SIDE_SPEECH = {
+    "left":   "on the left",
+    "center": "ahead",
+    "right":  "on the right",
+}
 
 
-class VoiceAgent:
-    def __init__(self, voice: str = "Samantha", rate: int = 180, sample_rate: int = 16000):
-        self.voice = voice          # macOS `say` voice name
-        self.rate = rate            # words per minute
-        self.sample_rate = sample_rate
-        self._has_say = platform.system() == "Darwin" and shutil.which("say") is not None
+# ─── TTS queue (single speaker thread — no overlapping speech) ────────────────
 
-    # ---- TEXT -> SPEECH (audio bytes, for Streamlit st.audio) -----------------
-    @_op
-    def synthesize(self, text: str) -> tuple[Optional[bytes], Optional[str]]:
-        """Render `text` to audio. Returns (audio_bytes, mime) for st.audio().
+class Speaker:
+    def __init__(self, voice: str):
+        self.voice  = voice
+        self._q     = queue.PriorityQueue()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
-        Order: gTTS (mp3, cross-platform, works in any browser) -> macOS `say`
-        (aiff) -> (None, None) if nothing is available. Use this in Streamlit:
-            data, mime = va.synthesize(reply)
-            if data: st.audio(data, format=mime, autoplay=True)
-        """
-        text = (text or "").strip()
-        if not text:
-            return None, None
-        # 1) gTTS -> mp3 (best for Streamlit; plays in every browser)
+    def say(self, text: str, priority: int = 1) -> None:
+        """Queue text for speech. Lower priority number = spoken first."""
+        self._q.put((priority, time.time(), text))
+
+    def interrupt(self, text: str) -> None:
+        """Clear queue and speak immediately (for threats)."""
+        while not self._q.empty():
+            try: self._q.get_nowait()
+            except queue.Empty: break
+        self._q.put((0, time.time(), text))
+
+    def _run(self) -> None:
+        while True:
+            _, _, text = self._q.get()
+            subprocess.run(["say", "-v", self.voice, text],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+# ─── Cooldown tracker ────────────────────────────────────────────────────────
+
+class Cooldown:
+    def __init__(self):
+        self._last: dict[str, float] = {}
+
+    def ready(self, key: str, seconds: float) -> bool:
+        if seconds == 0:
+            return True
+        now = time.time()
+        if now - self._last.get(key, 0) >= seconds:
+            self._last[key] = now
+            return True
+        return False
+
+
+# ─── Alert builder ────────────────────────────────────────────────────────────
+
+def build_alerts(payload: dict) -> list[dict]:
+    """
+    Convert one perception frame into a prioritised list of alert dicts.
+    Each alert: {priority, tier, text, label, side}
+    """
+    alerts = []
+    ts = payload.get("timestamp", 0)
+
+    # P3 — threats (weapons)
+    for t in payload.get("threats", []):
+        side = SIDE_SPEECH.get(t["side"], t["side"])
+        label = t["label"].capitalize()
+        alerts.append({
+            "priority": 0,
+            "tier":     "threat",
+            "text":     f"Warning! {label} {side}",
+            "key":      f"threat:{t['label']}:{t['side']}",
+            "label":    t["label"],
+            "side":     t["side"],
+            "confidence": t["confidence"],
+        })
+
+    # P2 — hazards (stairs, doors)
+    for h in payload.get("hazards", []):
+        side  = SIDE_SPEECH.get(h["side"], h["side"])
+        label = h["label"].replace("-", " ").capitalize()
+        alerts.append({
+            "priority": 1,
+            "tier":     "hazard",
+            "text":     f"{label} {side}",
+            "key":      f"hazard:{h['label']}:{h['side']}",
+            "label":    h["label"],
+            "side":     h["side"],
+            "confidence": h["confidence"],
+        })
+
+    # P1 — approaching or close nav detections
+    for d in payload.get("detections", []):
+        vel  = d.get("velocity", "unknown")
+        prox = d.get("proximity", "far")
+        if vel not in ("approaching", "crossing-L", "crossing-R") and prox != "close":
+            continue  # skip far + stationary
+        word = NAV_SPEECH.get(d["label"], d["label"])
+        side = SIDE_SPEECH.get(d["side"], d["side"])
+        if vel == "approaching":
+            text = f"{word.capitalize()} approaching {side}"
+        elif vel in ("crossing-L", "crossing-R"):
+            text = f"{word.capitalize()} crossing {side}"
+        else:
+            text = f"{word.capitalize()} close {side}"
+        alerts.append({
+            "priority": 2,
+            "tier":     "obstacle",
+            "text":     text,
+            "key":      f"obstacle:{d['label']}:{d['side']}",
+            "label":    d["label"],
+            "side":     d["side"],
+            "confidence": d["confidence"],
+        })
+
+    # P0 — ambient warnings
+    if payload.get("ambient_light") in ("dark", "dim"):
+        alerts.append({
+            "priority": 3,
+            "tier":     "ambient",
+            "text":     "Low light ahead",
+            "key":      "ambient:light",
+            "label":    "light",
+            "side":     "center",
+            "confidence": 1.0,
+        })
+
+    crowd = payload.get("crowd_count", 0)
+    if crowd >= 5:
+        alerts.append({
+            "priority": 3,
+            "tier":     "ambient",
+            "text":     f"Crowded area, {crowd} people",
+            "key":      "ambient:crowd",
+            "label":    "crowd",
+            "side":     "center",
+            "confidence": 1.0,
+        })
+
+    return alerts
+
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    speaker  = Speaker(VOICE)
+    cooldown = Cooldown()
+
+    print(f"Voice agent ready. Voice: {VOICE}. Listening for perception JSON...",
+          file=sys.stderr)
+
+    for raw_line in sys.stdin:
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
         try:
-            from gtts import gTTS
-            buf = tempfile.mktemp(suffix=".mp3")
-            gTTS(text=text).save(buf)
-            with open(buf, "rb") as f:
-                return f.read(), "audio/mp3"
-        except Exception:
-            pass
-        # 2) macOS `say` -> aiff
-        if self._has_say:
-            try:
-                out = tempfile.mktemp(suffix=".aiff")
-                subprocess.run(
-                    ["say", "-v", self.voice, "-r", str(self.rate), "-o", out, text],
-                    check=False,
-                )
-                with open(out, "rb") as f:
-                    return f.read(), "audio/aiff"
-            except Exception:
-                pass
-        return None, None
+            payload = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
 
-    @_op
-    def speak(self, text: str) -> None:
-        """Say `text` aloud on the local machine (CLI/desktop use, not Streamlit).
-        macOS `say` -> pyttsx3 -> print fallback."""
-        text = (text or "").strip()
-        if not text:
-            return
-        if self._has_say:
-            try:
-                subprocess.run(
-                    ["say", "-v", self.voice, "-r", str(self.rate), text],
-                    check=False,
-                )
-                return
-            except Exception:
-                pass
-        try:
-            import pyttsx3
-            engine = pyttsx3.init()
-            engine.setProperty("rate", self.rate)
-            engine.say(text)
-            engine.runAndWait()
-            return
-        except Exception:
-            pass
-        print(f"🔊 (TTS unavailable) Unleash says: {text}")
+        alerts = build_alerts(payload)
+        spoken = []
 
-    # ---- MIC -> AUDIO ---------------------------------------------------------
-    def record(self, seconds: float = 5.0) -> Optional[str]:
-        """Record `seconds` of mic audio to a temp WAV. Returns path or None."""
-        try:
-            import sounddevice as sd
-            import soundfile as sf
-        except Exception:
-            print("[voice] sounddevice/soundfile not installed — "
-                  "use transcribe(path) or pass text directly.", file=sys.stderr)
-            return None
-        try:
-            print(f"🎙️  Listening for {seconds:.0f}s…", file=sys.stderr)
-            audio = sd.rec(int(seconds * self.sample_rate),
-                           samplerate=self.sample_rate, channels=1)
-            sd.wait()
-            path = tempfile.mktemp(suffix=".wav")
-            sf.write(path, audio, self.sample_rate)
-            return path
-        except Exception as e:
-            print(f"[voice] recording failed: {e}", file=sys.stderr)
-            return None
+        for alert in alerts:
+            cd = COOLDOWNS[alert["tier"]]
+            if not cooldown.ready(alert["key"], cd):
+                continue
 
-    # ---- AUDIO -> TEXT (Gemini STT) ------------------------------------------
-    @_op
-    def transcribe(self, wav_path: str) -> str:
-        """Transcribe an audio FILE to text using Gemini. '' on failure."""
-        if not wav_path or not os.path.exists(wav_path):
-            return ""
-        if not os.environ.get("GEMINI_API_KEY"):
-            print("[voice] GEMINI_API_KEY missing — cannot transcribe.", file=sys.stderr)
-            return ""
-        try:
-            from google import genai
-            client = genai.Client()
-            uploaded = client.files.upload(file=wav_path)
-            resp = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[
-                    "Transcribe this audio to plain text. Return only the words spoken.",
-                    uploaded,
-                ],
-            )
-            return (resp.text or "").strip()
-        except Exception as e:
-            print(f"[voice] transcription failed: {e}", file=sys.stderr)
-            return ""
+            if alert["tier"] == "threat":
+                speaker.interrupt(alert["text"])
+            else:
+                speaker.say(alert["text"], priority=alert["priority"])
 
-    @_op
-    def transcribe_bytes(self, audio_bytes: bytes, suffix: str = ".wav") -> str:
-        """Transcribe raw audio bytes (e.g. from Streamlit's mic widget). '' on failure."""
-        if not audio_bytes:
-            return ""
-        try:
-            path = tempfile.mktemp(suffix=suffix)
-            with open(path, "wb") as f:
-                f.write(audio_bytes)
-            return self.transcribe(path)
-        except Exception as e:
-            print(f"[voice] byte transcription failed: {e}", file=sys.stderr)
-            return ""
+            spoken.append({
+                "tier":       alert["tier"],
+                "text":       alert["text"],
+                "label":      alert["label"],
+                "side":       alert["side"],
+                "confidence": alert["confidence"],
+            })
 
-    # ---- convenience ----------------------------------------------------------
-    @_op
-    def listen(self, seconds: float = 5.0) -> str:
-        """Record from mic and return the transcribed text ('' if unavailable)."""
-        wav = self.record(seconds)
-        return self.transcribe(wav) if wav else ""
+            print(f"[{alert['tier'].upper()}] {alert['text']}", file=sys.stderr)
+
+        # Emit to stdout for orchestrator / memory system
+        if spoken:
+            out = {
+                "timestamp": payload.get("timestamp"),
+                "scene":     payload.get("scene"),
+                "spoken":    spoken,
+                "raw_frame": payload,
+            }
+            print(json.dumps(out), flush=True)
 
 
 if __name__ == "__main__":
-    va = VoiceAgent()
-    va.speak("Hello, I'm your Unleash service dog. I'm online and listening.")
-    if os.environ.get("GEMINI_API_KEY"):
-        text = va.listen(4.0)
-        print("You said:", text)
+    main()
