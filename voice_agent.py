@@ -251,3 +251,33 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ─── VoiceAgent class — used by ui.py for in-browser audio playback ──────────
+
+class VoiceAgent:
+    """
+    Thin wrapper used by the Streamlit UI to synthesize spoken audio bytes.
+    Uses macOS `say` to generate an AIFF file, returns raw bytes + mime type.
+    Falls back gracefully if `say` is unavailable.
+    """
+
+    VOICE = os.environ.get("VOICE", "Samantha")
+
+    def synthesize(self, text: str) -> tuple[bytes | None, str]:
+        """Return (audio_bytes, mime_type) or (None, '') on failure."""
+        import tempfile, subprocess, os as _os
+        if not text:
+            return None, ""
+        try:
+            tmp = tempfile.mktemp(suffix=".aiff")
+            subprocess.run(
+                ["say", "-v", self.VOICE, "-o", tmp, text],
+                check=True, capture_output=True
+            )
+            with open(tmp, "rb") as f:
+                data = f.read()
+            _os.unlink(tmp)
+            return data, "audio/aiff"
+        except Exception:
+            return None, ""

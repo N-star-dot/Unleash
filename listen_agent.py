@@ -89,10 +89,10 @@ def main():
         calib_done.wait()
 
     ambient_rms   = float(np.mean([rms(f) for f in calib_frames]))
-    speech_thresh = max(ambient_rms * ENERGY_MARGIN, 300)  # floor of 300
+    speech_thresh = max(ambient_rms * ENERGY_MARGIN, 100)  # lowered floor: 300→100
     print(f"Ambient RMS: {ambient_rms:.0f}  |  Speech threshold: {speech_thresh:.0f}",
           file=sys.stderr)
-    print("Listening... (Ctrl-C to stop)", file=sys.stderr)
+    print("Listening... speak now, watching energy levels:", file=sys.stderr)
 
     # Main listen loop
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16",
@@ -101,6 +101,7 @@ def main():
         speech_frames: list[np.ndarray] = []
         silence_count = 0
         in_speech     = False
+        debug_counter = 0
 
         while True:
             try:
@@ -109,6 +110,8 @@ def main():
                 continue
 
             energy = rms(chunk)
+
+            debug_counter += 1
 
             if energy > speech_thresh:
                 # Speech detected

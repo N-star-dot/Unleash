@@ -18,6 +18,13 @@ os.environ.setdefault("WANDB_MODE", "disabled")
 os.environ.setdefault("MEM0_ENABLE_TELEMETRY", "false")
 os.environ.setdefault("MEM0_TELEMETRY", "false")
 
+# Load .env so GROQ_API_KEY etc are always available without manual export
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 VOICE = os.environ.get("VOICE", "Samantha")
 
 # ── Lazy brain loader ─────────────────────────────────────────────────────────
@@ -44,7 +51,7 @@ def _load_brain():
             "memory_agent":          memory_agent,
             "behavior_orchestrator": behavior_orchestrator,
         })
-        print("Brain ready.", file=sys.stderr)
+        print("\n✅ Brain ready — you can speak now!\n", file=sys.stderr)
     except Exception as e:
         _brain_error = e
         print(f"Brain load failed: {e}", file=sys.stderr)
@@ -54,11 +61,21 @@ def _load_brain():
 threading.Thread(target=_load_brain, daemon=True).start()
 
 
+STOP_WORDS = {"ok got it", "ok stop", "stop talking", "stop", "quiet",
+              "that's enough", "enough", "ok thanks", "thanks"}
+
+_current_speech = None
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def speak(text: str) -> None:
+    global _current_speech
+    # Kill any in-progress speech before starting new one
+    if _current_speech and _current_speech.poll() is None:
+        _current_speech.terminate()
     print(f"ARGUS: {text}", file=sys.stderr)
-    subprocess.Popen(["say", "-v", VOICE, text])
+    _current_speech = subprocess.Popen(["say", "-v", VOICE, text])
 
 
 def run_pipeline(voice_text: str) -> str:
@@ -98,6 +115,13 @@ def main():
 
         print(f"\nHeard: '{text}'", file=sys.stderr)
 
+        # Stop words — kill speech and keep listening
+        if any(sw in text.lower() for sw in STOP_WORDS):
+            if _current_speech and _current_speech.poll() is None:
+                _current_speech.terminate()
+            print("(stopped)", file=sys.stderr)
+            continue
+
         # Wait for brain (max 30s)
         if not _brain_ready.wait(timeout=30):
             speak("Still loading, please wait.")
@@ -107,7 +131,7 @@ def main():
             speak("Brain failed to load.")
             continue
 
-        print("Running pipeline...", file=sys.stderr)
+        print("🧠 Running pipeline...", file=sys.stderr)
         try:
             response = run_pipeline(text)
             print(f"Response: {response}", file=sys.stderr)
