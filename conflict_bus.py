@@ -8,3 +8,4 @@ class ConflictBusState(TypedDict):
     # Annotated with operator.add so memories accumulate during the episode rather than overwriting
     retrieved_memories: Annotated[List[str], operator.add]
     final_action: str
+    voice_input: str   # raw text from the user's speech (listen_agent.py)
