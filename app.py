@@ -298,10 +298,22 @@ def pattern_detector(state: ConflictBusState) -> dict:
             "timestamp": time.time()
         })
         
-    if any(c["type"] == "VisionAlert" for c in claims):
+    vision_alert = next((c for c in claims if c["type"] == "VisionAlert"), None)
+    if vision_alert:
+        crowd = telemetry.get("crowd_count", 0)
+        hazards = [h["label"] for h in telemetry.get("hazards", [])]
+        detections = [d["label"] for d in telemetry.get("detections", [])]
+        if crowd > 0:
+            desc = f"Crowd ahead — {crowd} {'person' if crowd == 1 else 'people'} detected"
+        elif hazards:
+            desc = f"Hazard ahead: {', '.join(set(hazards))}"
+        elif detections:
+            desc = f"Object ahead: {', '.join(set(detections))}"
+        else:
+            desc = f"High risk environment detected ({vision_alert.get('value', '')})"
         predictions.append({
             "source": "PatternDetector",
-            "description": "Approaching Crowd Detected (High density objects ahead)",
+            "description": desc,
             "confidence": 0.88,
             "timestamp": time.time()
         })

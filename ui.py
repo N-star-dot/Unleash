@@ -18,13 +18,14 @@ import time
 import os
 import json
 import traceback
+import hud_theme as hud
 from app import (
     process_biometrics,
     process_vision_queue,
     multimodal_fusion_agent,
-    pattern_detector, 
-    memory_agent, 
-    behavior_orchestrator, 
+    pattern_detector,
+    memory_agent,
+    behavior_orchestrator,
     action_dispatcher,
     retrospective_agent,
 )

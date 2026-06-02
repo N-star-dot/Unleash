@@ -72,6 +72,7 @@ CUSTOM_STRUCT_PATHS = [
 ]
 
 _BASE             = os.path.dirname(os.path.abspath(__file__))
+_LIVE_PERCEPTION  = os.path.join(_BASE, "live_perception.json")
 STAIRS_MODEL_PATH = os.path.join(_BASE, "models/stairs/train/weights/best.pt")
 DOORS_MODEL_PATH  = os.path.join(_BASE, "models/doors_run/train/weights/best.pt")
 WEAPON_MODEL_PATH = os.path.join(_BASE, "models/weapons/train/weights/best.pt")
@@ -234,6 +235,15 @@ class Perception:
                 "detections": detections,
                 "hazards": hazards_out,
             }
+        # Write latest perception state so voice_bridge can read it
+        if payload:
+            try:
+                _tmp = _LIVE_PERCEPTION + ".tmp"
+                with open(_tmp, "w") as _f:
+                    json.dump(payload, _f)
+                os.replace(_tmp, _LIVE_PERCEPTION)
+            except Exception:
+                pass
         return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), payload
 
     @staticmethod

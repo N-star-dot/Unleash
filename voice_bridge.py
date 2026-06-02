@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 
 os.environ.setdefault("WANDB_MODE", "disabled")
 os.environ.setdefault("MEM0_ENABLE_TELEMETRY", "false")
@@ -26,6 +27,20 @@ except ImportError:
     pass
 
 VOICE = os.environ.get("VOICE", "Samantha")
+_LIVE_PERCEPTION = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_perception.json")
+
+
+def _read_live_perception() -> dict:
+    """Read the latest YOLO frame written by perception.py. Returns {} if stale, missing, or dark (unreliable)."""
+    try:
+        with open(_LIVE_PERCEPTION) as f:
+            data = json.load(f)
+        age = time.time() - data.get("timestamp", 0) / 1000.0
+        if age >= 5 or data.get("ambient_light") == "dark":
+            return {}
+        return data
+    except Exception:
+        return {}
 
 # ── Lazy brain loader ─────────────────────────────────────────────────────────
 
@@ -37,13 +52,22 @@ def _load_brain():
     global _brain_error
     try:
         print("Loading brain (in background)...", file=sys.stderr)
-        from app import (
-            process_biometrics,
-            process_vision_queue,
-            pattern_detector,
-            memory_agent,
-            behavior_orchestrator,
-        )
+        # Suppress weave/gql/wandb noise at the OS level during import
+        _devnull = os.open(os.devnull, os.O_WRONLY)
+        _saved   = os.dup(2)
+        os.dup2(_devnull, 2)
+        try:
+            from app import (
+                process_biometrics,
+                process_vision_queue,
+                pattern_detector,
+                memory_agent,
+                behavior_orchestrator,
+            )
+        finally:
+            os.dup2(_saved, 2)
+            os.close(_devnull)
+            os.close(_saved)
         _pipeline_fns.update({
             "process_biometrics":    process_biometrics,
             "process_vision_queue":  process_vision_queue,
@@ -71,16 +95,16 @@ _current_speech = None
 
 def speak(text: str) -> None:
     global _current_speech
-    # Kill any in-progress speech before starting new one
     if _current_speech and _current_speech.poll() is None:
-        _current_speech.terminate()
+        _current_speech.kill()
+        _current_speech.wait()
     print(f"ARGUS: {text}", file=sys.stderr)
     _current_speech = subprocess.Popen(["say", "-v", VOICE, text])
 
 
 def run_pipeline(voice_text: str) -> str:
     state = {
-        "current_telemetry":  {},
+        "current_telemetry":  _read_live_perception(),
         "active_claims":      [],
         "active_predictions": [],
         "retrieved_memories": [],
@@ -118,7 +142,8 @@ def main():
         # Stop words — kill speech and keep listening
         if any(sw in text.lower() for sw in STOP_WORDS):
             if _current_speech and _current_speech.poll() is None:
-                _current_speech.terminate()
+                _current_speech.kill()
+                _current_speech.wait()
             print("(stopped)", file=sys.stderr)
             continue
 

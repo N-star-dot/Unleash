@@ -17,6 +17,7 @@ Usage:
 """
 
 import json
+import os
 import sys
 import tempfile
 import time
@@ -38,6 +39,7 @@ SILENCE_FRAMES  = 8         # 0.8s of silence ends an utterance
 CALIBRATE_SECS  = 1.5       # ambient noise calibration window
 ENERGY_MARGIN   = 1.6       # multiplier above ambient to count as speech
 MIN_SPEECH_FRAMES = 3       # ignore utterances shorter than 0.3s (noise bursts)
+MIC_DEVICE      = int(os.environ.get("MIC_DEVICE", "3"))  # MacBook Air Microphone
 
 
 # ─── Audio capture ───────────────────────────────────────────────────────────
@@ -85,7 +87,8 @@ def main():
             calib_done.set()
 
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16",
-                        blocksize=FRAME_SAMPLES, callback=_calib_cb):
+                        blocksize=FRAME_SAMPLES, callback=_calib_cb,
+                        device=MIC_DEVICE):
         calib_done.wait()
 
     ambient_rms   = float(np.mean([rms(f) for f in calib_frames]))
@@ -96,7 +99,8 @@ def main():
 
     # Main listen loop
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16",
-                        blocksize=FRAME_SAMPLES, callback=_audio_callback):
+                        blocksize=FRAME_SAMPLES, callback=_audio_callback,
+                        device=MIC_DEVICE):
 
         speech_frames: list[np.ndarray] = []
         silence_count = 0
