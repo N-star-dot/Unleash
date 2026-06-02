@@ -5,11 +5,17 @@
 streamlit>=1.40.0
 
 # --- Agent brain / LLM + memory ---
-mem0ai>=0.1.40          # provides `mem0` (Memory.from_config, Gemini llm+embedder, Qdrant store)
-google-genai>=1.0.0     # provides `google.genai` (Gemini 2.5 Flash orchestrator)
+mem0ai>=0.1.40          # provides `mem0` (Memory.from_config); now Groq llm + HF embedder + Qdrant store
+groq>=0.11.0            # Llama-3.3-70b orchestrator (app.py ai_client); needs GROQ_API_KEY
+shaped>=1.0.0           # ShapedQL ranked episodic recall (memory_agent.py / seed_shaped.py); needs SHAPED_API_KEY
+sentence-transformers>=2.2.0  # mem0 HF embedder (all-MiniLM-L6-v2, dim 384)
+google-genai>=1.0.0     # provides `google.genai` (imported by app.py; STT in voice_agent.py)
 weave>=0.51.0           # W&B Weave tracing (@weave.op); pulls in wandb
 requests>=2.31.0        # Bland AI emergency call (REST)
 python-dotenv>=1.0.0    # load GEMINI_API_KEY etc. from .env
+
+# --- Live biometrics webhook (health_webhook.py) ---
+flask>=3.0.0            # receives Apple Health (Health Auto Export) POSTs → live_biometrics.json
 
 # --- Computer vision (perception.py) ---
 ultralytics>=8.0.0      # YOLOv8n object detection

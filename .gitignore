@@ -9,3 +9,6 @@ wandb/
 # model weights (auto-downloaded or custom-trained; not committed)
 yolov8n-oiv7.pt
 models/
+# runtime biometric artifacts (health_webhook.py)
+live_biometrics.json
+raw_webhook_dump.json
