@@ -14,7 +14,7 @@ from app import (
     process_biometrics, 
     process_vision_queue,
     multimodal_fusion_agent,
-    pattern_detector, 
+    predictive_forecaster, 
     memory_agent, 
     behavior_orchestrator, 
     action_dispatcher,
@@ -66,8 +66,8 @@ def execute_scenario(scenario_name: str, telemetry: dict):
             fusion_output = multimodal_fusion_agent(state)
             state["environmental_embedding"] = fusion_output.get("environmental_embedding", [0.0]*1024)
             
-            st.write("🔍 **[2/4]** Pattern Detector analyzing baseline variations...")
-            pattern_output = pattern_detector(state)
+            st.write("🔍 **[2/4]** Predictive Forecaster analyzing biometric trajectory...")
+            pattern_output = predictive_forecaster(state)
             state["active_predictions"] = pattern_output.get("active_predictions", [])
             
             # Explicitly display the predictions on the UI so judges can read the baseline math!
