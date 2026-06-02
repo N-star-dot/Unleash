@@ -1,0 +1,26 @@
+[
+    {
+        "scenario_name": "Passive State",
+        "predictions": [],
+        "memories": [],
+        "expected_action": "Maintain passive navigation mode (Safe)"
+    },
+    {
+        "scenario_name": "Panic Attack Precursor",
+        "predictions": [{"description": "Panic Attack Precursor Detected (HR spike profile match)"}],
+        "memories": [],
+        "expected_action": "Play grounding countdown audio through AirPods"
+    },
+    {
+        "scenario_name": "Approaching Crowd Warning",
+        "predictions": [{"description": "Approaching Crowd Detected (High density objects ahead)"}],
+        "memories": [],
+        "expected_action": "Initiate a gentle physical nudge to ground the user"
+    },
+    {
+        "scenario_name": "Extreme Emergency (Seizure/Fall)",
+        "predictions": [{"description": "SEVERE SEIZURE OR FALL DETECTED (Critical Emergency)"}],
+        "memories": [],
+        "expected_action": "Call emergency services immediately"
+    }
+]
