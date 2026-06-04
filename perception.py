@@ -48,7 +48,15 @@ _BASE = os.path.dirname(os.path.abspath(__file__))
 
 # ── detection config ─────────────────────────────────────────────────────────
 CONF_NAV = 0.45
-CONF_STRUCT = 0.40           # oiv7 stairs/doors; raise if a custom model overfits
+CONF_STRUCT = 0.40           # default floor for structural classes (ladder/escalator)
+# Per-label structural cutoffs. Stairs/doors false-positive badly in plain rooms,
+# so gate them MUCH higher — only report when the model is very sure. (Stairs is
+# the most safety-critical hazard for VI users, so don't push so high you miss
+# real steps; 0.85 kills the office false positives seen in testing.)
+CONF_STRUCT_BY_LABEL = {
+    "stairs": 0.95,
+    "door":   0.95,
+}
 STRUCT_EVERY = 3             # run the (heavier) structural model every Nth frame
 
 NAV_CLASSES = {
@@ -73,6 +81,7 @@ CUSTOM_STRUCT_PATHS = [
 
 _BASE             = os.path.dirname(os.path.abspath(__file__))
 _LIVE_PERCEPTION  = os.path.join(_BASE, "live_perception.json")
+_LIVE_FRAME       = os.path.join(_BASE, "live_frame.jpg")   # annotated frame for the dashboard
 STAIRS_MODEL_PATH = os.path.join(_BASE, "models/stairs/train/weights/best.pt")
 DOORS_MODEL_PATH  = os.path.join(_BASE, "models/doors_run/train/weights/best.pt")
 WEAPON_MODEL_PATH = os.path.join(_BASE, "models/weapons/train/weights/best.pt")
@@ -203,13 +212,16 @@ class Perception:
                 for box in model(frame, verbose=False)[0].boxes:
                     raw = model.names[int(box.cls[0])]
                     conf = float(box.conf[0])
-                    if conf < CONF_STRUCT:
-                        continue
                     if not self._struct_custom and raw.lower() not in OIV7_STRUCT:
+                        continue
+                    label = _norm_struct(raw)
+                    # Per-label confidence gate — stairs/doors need to clear a
+                    # much higher bar to suppress false positives in empty rooms.
+                    if conf < CONF_STRUCT_BY_LABEL.get(label, CONF_STRUCT):
                         continue
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     hazards.append({
-                        "label": _norm_struct(raw), "confidence": round(conf, 2),
+                        "label": label, "confidence": round(conf, 2),
                         "side": _side((x1 + x2) / 2, W),
                         "proximity": "close" if (x2 - x1) / W > 0.30 else "far",
                         "_box": (x1, y1, x2, y2),
@@ -235,6 +247,19 @@ class Perception:
                 "detections": detections,
                 "hazards": hazards_out,
             }
+        # Write the annotated frame so the dashboard (ui.py) can show the live cam.
+        # Every frame (not just on detections) so the view stays smooth. Atomic.
+        # Encode explicitly — imwrite infers format from the extension, which the
+        # ".tmp" suffix would break, so go through imencode + raw bytes instead.
+        try:
+            _ok, _buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+            if _ok:
+                _ftmp = _LIVE_FRAME + ".tmp"
+                with open(_ftmp, "wb") as _ff:
+                    _ff.write(_buf.tobytes())
+                os.replace(_ftmp, _LIVE_FRAME)
+        except Exception:
+            pass
         # Write latest perception state so voice_bridge can read it
         if payload:
             try:

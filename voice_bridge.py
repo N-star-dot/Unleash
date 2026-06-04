@@ -178,6 +178,12 @@ def main():
             print("(stopped)", file=sys.stderr)
             continue
 
+        # Surface the transcript on the dashboard the INSTANT we hear it, before
+        # the (slower) brain pipeline runs. Otherwise the panel trails a full
+        # exchange behind — the heard text only appeared once the brain finished.
+        # run_pipeline() overwrites this with the full response a moment later.
+        _write_live_voice(heard=text, thinking="…", response="", action="")
+
         # Wait for brain (max 30s)
         if not _brain_ready.wait(timeout=30):
             speak("Still loading, please wait.")

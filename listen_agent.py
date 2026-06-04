@@ -32,6 +32,9 @@ import speech_recognition as sr
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
+_HERE          = os.path.dirname(os.path.abspath(__file__))
+MIC_PAUSE_FLAG = os.path.join(_HERE, "mic_paused.flag")  # dashboard toggles this to pause the mic
+
 SAMPLE_RATE     = 16000
 FRAME_MS        = 100       # ms per audio chunk (10 chunks/sec)
 FRAME_SAMPLES   = int(SAMPLE_RATE * FRAME_MS / 1000)
@@ -120,6 +123,15 @@ def main():
             try:
                 chunk = audio_q.get(timeout=1.0)
             except queue.Empty:
+                continue
+
+            # Paused from the dashboard — drain audio, reset any in-progress
+            # utterance, and emit nothing until the flag is cleared.
+            if os.path.exists(MIC_PAUSE_FLAG):
+                if in_speech or speech_frames:
+                    in_speech     = False
+                    speech_frames = []
+                    silence_count = 0
                 continue
 
             energy = rms(chunk)

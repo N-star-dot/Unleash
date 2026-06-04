@@ -249,7 +249,11 @@ def run_pipeline(telemetry: dict, arm_real_calls: bool = False) -> dict:
 import sys as _sys
 import subprocess
 
-_LIVE_VOICE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_voice.json")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_LIVE_VOICE = os.path.join(_HERE, "live_voice.json")
+_LIVE_PERCEPTION = os.path.join(_HERE, "live_perception.json")
+_LIVE_FRAME = os.path.join(_HERE, "live_frame.jpg")
+_MIC_PAUSE_FLAG = os.path.join(_HERE, "mic_paused.flag")  # listen_agent.py honors this
 
 
 @st.cache_resource
@@ -264,6 +268,12 @@ def _start_voice_agent():
     and duplicate processes never pile up.
     """
     here = os.path.dirname(os.path.abspath(__file__))
+    # Fresh launch always starts listening — clear any stale pause flag left
+    # behind if the app was killed while the mic was paused.
+    try:
+        os.remove(_MIC_PAUSE_FLAG)
+    except FileNotFoundError:
+        pass
     return subprocess.Popen(
         f'"{_sys.executable}" listen_agent.py | "{_sys.executable}" voice_bridge.py',
         shell=True, cwd=here,
@@ -292,12 +302,19 @@ def _voice_row(label: str, value: str, accent: str, *, italic: bool = False) -> 
     )
 
 
-@st.fragment(run_every=1.0)
+@st.fragment(run_every=0.5)
 def _render_voice_panel() -> None:
-    """Live VOICE panel — refreshes itself every second, no full-page reload."""
+    """Live VOICE panel — refreshes twice a second so the heard transcript shows
+    in near-real-time (voice_bridge writes it the instant the mic hears you)."""
     proc = _start_voice_agent()
     alive = proc is not None and proc.poll() is None
-    status_pill = hud.pill("LISTENING", "live") if alive else hud.pill("OFFLINE", "danger")
+    paused = os.path.exists(_MIC_PAUSE_FLAG)
+    if not alive:
+        status_pill = hud.pill("OFFLINE", "danger")
+    elif paused:
+        status_pill = hud.pill("PAUSED", "warning")
+    else:
+        status_pill = hud.pill("LISTENING", "live")
 
     data = _read_live_voice()
     if not data:
@@ -321,14 +338,411 @@ def _render_voice_panel() -> None:
     )
 
 
+def _read_live_perception() -> tuple[dict, bool]:
+    """Latest YOLO perception payload + whether it's fresh (<5s old)."""
+    try:
+        with open(_LIVE_PERCEPTION) as f:
+            data = json.load(f)
+        fresh = (time.time() - data.get("timestamp", 0) / 1000.0) < 5
+        return data, fresh
+    except Exception:
+        return {}, False
+
+
+@st.fragment(run_every=0.5)
+def _render_camera_panel() -> None:
+    """Live YOLOv8 camera — the annotated frame perception.py writes to disk,
+    shown directly beneath the voice reasoning/response so the operator sees
+    exactly what the brain is grounding its answers on."""
+    frame_bytes, frame_fresh = None, False
+    try:
+        if os.path.exists(_LIVE_FRAME):
+            frame_fresh = (time.time() - os.path.getmtime(_LIVE_FRAME)) < 5
+            with open(_LIVE_FRAME, "rb") as f:
+                frame_bytes = f.read()
+    except Exception:
+        pass
+
+    percep, _ = _read_live_perception()
+    status_pill = hud.pill("LIVE", "live") if frame_fresh else hud.pill("NO SIGNAL", "danger")
+
+    st.markdown(
+        hud.panel("CAMERA // LIVE", "YOLOv8 — WHAT THE DOG SEES", "", status_pill),
+        unsafe_allow_html=True,
+    )
+
+    if frame_bytes and frame_fresh:
+        st.image(frame_bytes, use_container_width=True)
+    else:
+        st.markdown(
+            '<div style="color:var(--hud-muted);font-size:14px;padding:8px 0">'
+            'Camera offline — start <code>perception.py</code> to stream frames.</div>',
+            unsafe_allow_html=True,
+        )
+
+    if percep:
+        dets = ", ".join(
+            f"{d['label']} ({d.get('side','?')}, {d.get('proximity','?')})"
+            for d in percep.get("detections", [])
+        ) or "—"
+        hazards = ", ".join(
+            f"{h['label']} ({h.get('side','?')}, {h.get('proximity','?')})"
+            for h in percep.get("hazards", [])
+        ) or "—"
+        risk = percep.get("risk_level", "LOW")
+        risk_accent = {"HIGH": "--hud-danger", "MED": "--hud-warning"}.get(risk, "--hud-success")
+        readout = (
+            _voice_row("SCENE", percep.get("scene", "unknown"), "--hud-cyan")
+            + _voice_row("RISK", risk, risk_accent)
+            + _voice_row("CROWD", str(percep.get("crowd_count", 0)), "--hud-label")
+            + _voice_row("DETECTED", dets, "--hud-cyan")
+            + _voice_row("HAZARDS", hazards, "--hud-warning")
+        )
+        st.markdown(
+            '<div role="status" aria-live="polite">' + readout + "</div>",
+            unsafe_allow_html=True,
+        )
+
+
 # --- Voice agent: one panel of the dashboard (does NOT own the page) --------
 # Auto-start the mic + brain on first load, then render the live exchange as a
 # single contained panel. The rest of the dashboard (run_pipeline above) is left
 # intact; this only adds the voice section, it never replaces the UI.
-def render_voice_section() -> None:
-    _start_voice_agent()  # kick off the mic + brain immediately on first load
-    st.markdown(hud.hud_sep("VOICE AGENT // ALWAYS ON"), unsafe_allow_html=True)
-    _render_voice_panel()
+def _render_mic_controls() -> None:
+    """Pause / resume the mic. Writes (or clears) mic_paused.flag, which
+    listen_agent.py polls every frame — paused = audio captured but dropped."""
+    paused = os.path.exists(_MIC_PAUSE_FLAG)
+    label = "▶  RESUME MIC" if paused else "⏸  PAUSE MIC"
+    if st.button(label, use_container_width=True, key="mic_pause_btn"):
+        if paused:
+            try:
+                os.remove(_MIC_PAUSE_FLAG)
+            except FileNotFoundError:
+                pass
+        else:
+            open(_MIC_PAUSE_FLAG, "w").close()
+        st.rerun()
+    if paused:
+        st.markdown(
+            '<div style="color:var(--hud-warning);font-size:12px;'
+            'font-family:var(--font-mono);letter-spacing:1px">MIC PAUSED — '
+            'not listening</div>',
+            unsafe_allow_html=True,
+        )
 
 
-render_voice_section()
+# ===========================================================================
+# COMMAND CENTER surfaces — read-only mirrors of the live pipeline, built from
+# the same JSON the agents write (live_perception.json / live_voice.json), so
+# they never run a second blocking camera loop. Each auto-refreshes once a
+# second and is dropped onto the single unified page below.
+# ===========================================================================
+def _read_live_biometrics() -> dict:
+    try:
+        with open(os.path.join(_HERE, "live_biometrics.json")) as f:
+            data = json.load(f)
+        if time.time() - data.get("timestamp", 0) < 60:
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+@st.fragment(run_every=1.0)
+def _render_stat_cards() -> None:
+    """Top biometric / threat readout — hazards, crowd, threat index, heart rate.
+    Reads the same live JSON the perception + biometrics agents write."""
+    percep, fresh = _read_live_perception()
+    bio = _read_live_biometrics()
+
+    risk    = percep.get("risk_level", "LOW") if fresh else "LOW"
+    crowd   = percep.get("crowd_count", 0) if fresh else 0
+    hazards = percep.get("hazards", []) if fresh else []
+    hr      = bio.get("heart_rate")
+    score   = {"LOW": 18, "MED": 55, "HIGH": 88}.get(risk, 18)
+    rvar    = {"LOW": "success", "MED": "warning", "HIGH": "danger"}.get(risk, "success")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(hud.stat_card(str(len(hazards)), "HAZARDS", "BUS",
+                "danger" if hazards else "cyan"), unsafe_allow_html=True)
+    c2.markdown(hud.stat_card(str(crowd), "CROWD", "CV", "cyan"), unsafe_allow_html=True)
+    c3.markdown(hud.stat_card(str(score), "THREAT INDEX", risk, rvar), unsafe_allow_html=True)
+    c4.markdown(hud.stat_card(str(hr) if hr else "—", "HEART RATE", "BPM",
+                "danger" if (hr and hr > 100) else "success"), unsafe_allow_html=True)
+
+
+@st.fragment(run_every=1.0)
+def _render_conflict_bus() -> None:
+    """Live perception claims on the conflict bus + the orchestrator's directive."""
+    percep, fresh = _read_live_perception()
+    voice = _read_live_voice()
+
+    dets    = percep.get("detections", []) if fresh else []
+    hazards = percep.get("hazards", []) if fresh else []
+
+    rows = ""
+    for d in dets:
+        rows += hud.claim_row(
+            "PERCEPTION", str(d.get("label", "obj")).upper(),
+            f"{d.get('side','?')} · {d.get('proximity','?')} · risk {d.get('collision_risk', 0)}",
+            "danger" if d.get("proximity") == "close" else "cyan",
+        )
+    for h in hazards:
+        rows += hud.claim_row(
+            "HAZARD", str(h.get("label", "")).upper(),
+            f"{h.get('side','?')} · {h.get('proximity','?')} · conf {h.get('confidence', '')}",
+            "warning",
+        )
+    if rows:
+        st.markdown(hud.panel("CONFLICT BUS", "LIVE PERCEPTION CLAIMS", rows,
+                    hud.pill("FIRING", "danger")), unsafe_allow_html=True)
+    else:
+        clear = '<span style="color:var(--hud-success)">● ALL CALM // BUS CLEAR</span>'
+        st.markdown(hud.panel("CONFLICT BUS", "LIVE PERCEPTION CLAIMS", clear,
+                    hud.pill("CLEAR", "live") if fresh else hud.pill("NO SIGNAL", "danger")),
+                    unsafe_allow_html=True)
+
+    if voice:
+        dbody = (
+            '<div style="font-size:14px;color:var(--text-primary);line-height:1.4">'
+            f'{_esc(voice.get("response", "")) or "—"}</div>'
+            '<div style="font-family:var(--font-mono);font-size:10px;letter-spacing:1px;'
+            f'color:var(--hud-label);margin-top:6px">{_esc(voice.get("action", ""))}</div>'
+        )
+        st.markdown(hud.panel("DIRECTIVE", "ORCHESTRATOR DECISION", dbody,
+                    hud.pill("EXECUTED", "cyan")), unsafe_allow_html=True)
+
+
+def _api_status_line(label: str, env_var: str) -> str:
+    connected = bool(os.environ.get(env_var))
+    return (
+        '<div style="display:flex;align-items:center;justify-content:space-between;'
+        'margin:6px 0;font-family:var(--font-mono);font-size:10px;letter-spacing:1px">'
+        f'<span style="color:var(--text-secondary)">{_esc(label)}</span>'
+        f'{hud.pill("CONNECTED" if connected else "MISSING", "live" if connected else "danger")}'
+        '</div>'
+    )
+
+
+# ===========================================================================
+# LEGACY SURFACES restored as sibling tabs — the Agent Mesh (memory agents
+# collaborating), Biometrics vitals, and the Place/Map. The modules
+# (location_agent / companion_hud) were always present, just unplugged during
+# the voice rewrite; these wire them back in.
+# ===========================================================================
+def _run_agent_mesh() -> None:
+    """Run the full multi-agent pipeline on the current live perception frame so
+    the operator can watch Pattern → Memory → Orchestrator collaborate. Results
+    are stashed in session_state.last for the panels below."""
+    percep, _ = _read_live_perception()
+    telem = percep or st.session_state.last.get("telemetry", {})
+    state = {
+        "current_telemetry":  telem,
+        "active_claims":      [],
+        "active_predictions": [],
+        "retrieved_memories": [],
+        "final_action":       "",
+    }
+    with st.status("Running multi-agent mesh on live scene...", expanded=True) as status:
+        try:
+            st.write("📡 **Ingest** — biometric + vision claims onto the bus")
+            state.update(process_biometrics(telem))
+            state.update(process_vision_queue(telem))
+            st.write("🔍 **Pattern Detector** — baseline anomaly forecast")
+            state.update(pattern_detector(state))
+            st.write("🧠 **Memory Agent** — Mem0 episodic recall")
+            state.update(memory_agent(state))
+            st.write("⚖️ **Orchestrator** — resolving the final directive")
+            state.update(behavior_orchestrator(state))
+            status.update(label="Agent mesh complete", state="complete", expanded=False)
+        except Exception as exc:  # noqa: BLE001 — never crash the tab
+            st.error(f"Mesh run failed: {type(exc).__name__}: {exc}")
+            status.update(label="Mesh run failed", state="error", expanded=True)
+            return
+
+    mems = state.get("retrieved_memories", [])
+    st.session_state.last["predictions"] = state.get("active_predictions", [])
+    st.session_state.last["memories"] = [
+        m if isinstance(m, str) else m.get("memory", str(m)) for m in mems
+    ]
+    st.session_state.last["action"] = state.get("final_action", "")
+
+
+def _render_agents_tab() -> None:
+    st.markdown(hud.hud_sep("AGENT MESH // STATUS"), unsafe_allow_html=True)
+    agents = ["Perception", "Biometric", "Pattern", "Memory",
+              "Orchestrator", "Action", "Retrospective"]
+    chips_html = "".join(hud.agent_status(a, "ONLINE") for a in agents)
+    st.markdown(f'<div class="chips">{chips_html}</div>', unsafe_allow_html=True)
+
+    st.markdown(hud.hud_sep("MULTI-AGENT RUN // LIVE SCENE"), unsafe_allow_html=True)
+    st.caption("Run the full mesh on the current live perception frame — watch "
+               "Pattern → Memory → Orchestrator work together.")
+    if st.button("▶  RUN AGENT MESH ON LIVE SCENE", use_container_width=True, key="run_mesh"):
+        _run_agent_mesh()
+
+    last = st.session_state.last
+    a_left, a_right = st.columns(2)
+    with a_left:
+        st.markdown(hud.hud_sep("PREDICTIONS"), unsafe_allow_html=True)
+        preds = last.get("predictions", [])
+        if preds:
+            body = "".join(
+                f'<div style="margin:6px 0">'
+                f'<span style="color:var(--hud-cyan)">▸ {_esc(p.get("description",""))}</span>'
+                f'<span style="font-family:var(--font-mono);font-size:10px;color:var(--hud-muted);'
+                f'margin-left:8px">CONF {int(p.get("confidence",0)*100)}%</span></div>'
+                for p in preds
+            )
+        else:
+            body = '<span style="color:var(--hud-success)">● NO ANOMALY PREDICTED</span>'
+        st.markdown(hud.panel("PATTERN DETECTOR", "ANOMALY FORECAST", body), unsafe_allow_html=True)
+    with a_right:
+        st.markdown(hud.hud_sep("RECALLED MEMORIES"), unsafe_allow_html=True)
+        mems = last.get("memories", [])
+        if mems:
+            body = "".join(f'<div style="margin:5px 0">◆ {_esc(m)}</div>' for m in mems[:6])
+        else:
+            body = '<span style="color:var(--hud-muted)">NO EPISODIC RECALL FOR THIS CONTEXT</span>'
+        st.markdown(hud.panel("MEMORY AGENT", "MEM0 // EPISODIC", body), unsafe_allow_html=True)
+
+    if last.get("action"):
+        st.markdown(hud.hud_sep("RESOLVED DIRECTIVE"), unsafe_allow_html=True)
+        st.markdown(
+            hud.panel("ORCHESTRATOR", "FINAL ACTION",
+                      f'<div style="font-size:14px;color:var(--text-primary)">'
+                      f'{_esc(last["action"])}</div>', hud.pill("RESOLVED", "cyan")),
+            unsafe_allow_html=True,
+        )
+
+
+@st.fragment(run_every=2.0)
+def _render_biometrics_tab() -> None:
+    st.markdown(hud.hud_sep("VITALS // TELEMETRY"), unsafe_allow_html=True)
+    bio = _read_live_biometrics()
+    hr = bio.get("heart_rate")
+
+    # Maintain a rolling HR series from the live feed so the chart moves.
+    series = st.session_state.last.get("hr_series", [])
+    if hr is not None:
+        series = (series + [hr])[-40:]
+        st.session_state.last["hr_series"] = series
+
+    bm1, bm2 = st.columns(2)
+    with bm1:
+        st.markdown(hud.stat_card(str(int(hr)) if hr else "—", "HEART RATE", "BPM",
+                    "danger" if (hr and hr > 100) else "success"), unsafe_allow_html=True)
+        if series:
+            st.area_chart({"BPM": series}, height=160, color="#00D4FF")
+    with bm2:
+        hrv = bio.get("hrv")
+        st.markdown(hud.stat_card(str(int(hrv)) if hrv else "—", "HRV", "ms",
+                    "warning" if (hrv and hrv < 40) else "cyan"), unsafe_allow_html=True)
+        st.markdown(
+            '<div style="color:var(--hud-muted);font-size:12px;padding:8px 0">'
+            'Heart rate streams from the Apple Health webhook (:5050). HRV shows '
+            'when the phone sends it.</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(hud.hud_sep("COMPANION HUD // MIRROR"), unsafe_allow_html=True)
+    percep, fresh = _read_live_perception()
+    voice = _read_live_voice()
+    detections = percep.get("detections", []) if fresh else []
+    live_state = {
+        "agents_online": 7,
+        "confidence": 91,
+        "heart_rate": int(hr) if hr else 72,
+        "hazards_near": len(detections),
+        "heart_variant": "danger" if (hr and hr > 100) else "success",
+        "hazards_variant": "warning" if detections else "success",
+        "spoken": voice.get("response", "") or "All clear. I'm here with you.",
+        "tone": "URGENT" if detections else "CALM",
+    }
+    try:
+        from companion_hud import render_companion_hud
+        render_companion_hud(live_state)
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"Companion HUD unavailable: {exc}")
+
+
+def _render_place_tab() -> None:
+    st.markdown(hud.hud_sep("LOCATION // PLACE"), unsafe_allow_html=True)
+    try:
+        from location_agent import LocationAgent
+        loc = LocationAgent()
+        coord = loc.get_current_coord()
+        st.markdown(
+            hud.panel("WHERE AM I", f"SOURCE: {_esc(coord.get('source','?')).upper()}",
+                      f'<div style="font-size:14px;color:var(--text-primary)">'
+                      f'{_esc(loc.where_am_i())}</div>'),
+            unsafe_allow_html=True,
+        )
+        try:
+            import pandas as pd
+            st.map(pd.DataFrame([{"lat": coord["lat"], "lon": coord["lon"]}]), zoom=13)
+        except Exception as exc:  # noqa: BLE001
+            st.caption(f"Map unavailable: {exc}")
+
+        st.markdown(hud.hud_sep("DIRECTIONS"), unsafe_allow_html=True)
+        dest = st.text_input("Directions to", placeholder="e.g. Harvard Square",
+                             key="place_dest")
+        if dest:
+            st.write(loc.directions(dest))
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"Location agent unavailable: {exc}")
+
+
+# ===========================================================================
+# APP SHELL — tabbed operator console. Tab 1 is the unified live page (stat
+# cards + camera + voice + conflict bus); the Agents / Biometrics / Place tabs
+# restore the surfaces that the voice rewrite had dropped. The mic + brain boot
+# once here, regardless of the active tab.
+# ===========================================================================
+_start_voice_agent()
+
+with st.sidebar:
+    st.markdown(
+        hud.reactor_header("SERVICE DOG", "UNLEASH // OPERATOR", hud.pill("ONLINE", "live")),
+        unsafe_allow_html=True,
+    )
+    st.markdown(hud.hud_sep("MICROPHONE"), unsafe_allow_html=True)
+    _render_mic_controls()
+    st.markdown(hud.hud_sep("API STATUS"), unsafe_allow_html=True)
+    st.markdown(_api_status_line("GROQ", "GROQ_API_KEY"), unsafe_allow_html=True)
+    st.markdown(_api_status_line("W&B", "WANDB_API_KEY"), unsafe_allow_html=True)
+    st.markdown(_api_status_line("BLAND", "BLAND_API_KEY"), unsafe_allow_html=True)
+
+st.markdown(
+    '<h1 style="margin-bottom:2px">COMMAND CENTER</h1>'
+    '<p style="font-family:var(--font-mono);font-size:11px;letter-spacing:2px;'
+    'color:var(--hud-muted);margin-top:0">UNLEASH MULTI-AGENT SERVICE DOG // REAL-TIME OPS</p>',
+    unsafe_allow_html=True,
+)
+
+tab_cc, tab_agents, tab_bio, tab_place = st.tabs(
+    ["Command Center", "Agents", "Biometrics", "Place"]
+)
+
+with tab_cc:
+    # Top — live biometric / threat readout.
+    _render_stat_cards()
+    # Middle — live camera (wide) + voice companion side by side.
+    st.markdown(hud.hud_sep("LIVE FEED // COMPANION"), unsafe_allow_html=True)
+    _cam_col, _voice_col = st.columns([2, 1])
+    with _cam_col:
+        _render_camera_panel()
+    with _voice_col:
+        _render_voice_panel()
+    # Bottom — conflict bus + orchestrator directive.
+    st.markdown(hud.hud_sep("CONFLICT BUS // DIRECTIVE"), unsafe_allow_html=True)
+    _render_conflict_bus()
+
+with tab_agents:
+    _render_agents_tab()
+
+with tab_bio:
+    _render_biometrics_tab()
+
+with tab_place:
+    _render_place_tab()

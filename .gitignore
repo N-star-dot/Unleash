@@ -2,3 +2,13 @@ venv/
 __pycache__/
 .env
 .checkpoints/
+
+# Model weights — large (993MB+), not versioned
+models/
+
+# Runtime artifacts written by the live agents
+live_*.json
+live_frame.jpg
+mic_paused.flag
+*.log
+raw_webhook_dump.json
