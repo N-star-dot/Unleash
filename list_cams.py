@@ -45,3 +45,5 @@ if not found:
     sys.exit(1)
 
 print(f"\nFound {len(found)} camera(s). iPhone via Continuity Camera is usually the highest index.", file=sys.stderr)
+
+# touched 2026-06-03

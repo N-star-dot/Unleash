@@ -772,3 +772,5 @@ def render() -> None:
             unsafe_allow_html=True,
         )
         st.caption("Live calls are OFF. The emergency path is always simulated (no real call).")
+
+# touched 2026-06-03

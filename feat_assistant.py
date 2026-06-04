@@ -388,3 +388,5 @@ def render() -> None:
 if __name__ == "__main__":  # pragma: no cover — standalone smoke test
     hud.inject_theme()
     render()
+
+# touched 2026-06-03

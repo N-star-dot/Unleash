@@ -284,3 +284,5 @@ def render_companion_hud(state: dict | None = None) -> None:
 </html>"""
 
     components.html(page, height=880, scrolling=False)
+
+# touched 2026-06-03

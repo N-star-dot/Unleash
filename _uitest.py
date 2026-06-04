@@ -13,3 +13,5 @@ else:
     print("✅ NO runtime exceptions")
 print("radio options:", [list(r.options) for r in at.radio])
 print("sidebar markdown blocks:", len(at.sidebar.markdown))
+
+# touched 2026-06-03

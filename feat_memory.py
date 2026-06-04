@@ -409,3 +409,5 @@ def _render_recall_results(query: str) -> None:
         '(Qdrant <code>:memory:</code>, not rehydrated from SQLite yet).</p>',
         unsafe_allow_html=True,
     )
+
+# touched 2026-06-03
