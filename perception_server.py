@@ -3,13 +3,35 @@ import time
 import cv2
 import argparse
 from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 import uvicorn
 
 # Import the existing vision generator logic
 from perception import vision_generator
 
 app = FastAPI(title="Unleash Perception Service")
+
+@app.get("/")
+def index():
+    return HTMLResponse(content="""
+    <html>
+        <head>
+            <title>Unleash Perception Stream</title>
+            <style>
+                body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; }
+                img { max-width: 100%; max-height: 100%; object-fit: contain; }
+            </style>
+        </head>
+        <body>
+            <img src="/stream" />
+        </body>
+    </html>
+    """)
+
+@app.get("/favicon.ico")
+def favicon():
+    from fastapi import Response
+    return Response(status_code=204)
 
 latest_frame = None
 latest_payload = {"status": "initializing"}
